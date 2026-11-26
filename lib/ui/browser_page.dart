@@ -818,6 +818,19 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   }
 
   Widget _playerLayer(ColorScheme scheme) {
+    if (!_pip) {
+      // No floating window inside the app: the page keeps playing out of sight
+      // (sound + notification); the system floating window shows it when you leave the app.
+      return Positioned(
+        right: 0,
+        bottom: 0,
+        width: 80,
+        height: 45,
+        child: IgnorePointer(
+          child: Opacity(opacity: 0.01, child: WebViewWidget(key: _playerKey, controller: _player!)),
+        ),
+      );
+    }
     final full = _pip || _big;
     const w = 220.0;
     const h = 124.0;
