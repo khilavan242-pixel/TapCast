@@ -16,31 +16,41 @@ class QuickCastActivity : Activity() {
 
     private var videoId: String? = null
     private var listUrl: String? = null
+    private var shorts = false
+    private var sharedUrl = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val shared = intent?.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
         val url = Regex("""https?://[^\s<>"']+""").find(shared)?.value
+        sharedUrl = url.orEmpty()
         videoId = CastQueue.videoId(url)
-        if (videoId == null) {
+        shorts = url?.contains("/shorts/") == true
+        val list = url?.let { Regex("""[?&]list=([A-Za-z0-9_-]+)""").find(it)?.groupValues?.get(1) }
+        listUrl = list?.takeIf { !it.startsWith("RD") }?.let { "https://www.youtube.com/playlist?list=$it" }
+        if (videoId == null && listUrl == null) {
             Toast.makeText(this, "No YouTube video found in what was shared", Toast.LENGTH_LONG).show()
             finish()
             return
         }
-        val list = url?.let { Regex("""[?&]list=([A-Za-z0-9_-]+)""").find(it)?.groupValues?.get(1) }
-        listUrl = list?.takeIf { !it.startsWith("RD") }?.let { "https://www.youtube.com/playlist?list=$it" }
 
         val saved = AppSettings.lastDevice(this)
         if (saved != null) cast(saved) else pick()
     }
 
     private fun cast(device: DlnaCaster.Device) {
-        val id = videoId ?: return finish()
         Toast.makeText(this, "Casting to ${device.name}…", Toast.LENGTH_SHORT).show()
         val app = applicationContext
         thread(name = "quick-cast") {
             try {
-                CastQueue.begin(app, device, id, listUrl)
+                if (!DlnaCaster.reachable(device)) {
+                    runOnUiThread { offerPhone(device) }
+                    return@thread
+                }
+                val id = videoId
+                val list = listUrl
+                if (id != null) CastQueue.begin(app, device, id, list, shorts = shorts)
+                else if (list != null) CastQueue.beginPlaylist(app, device, list)
                 runOnUiThread { finish() }
             } catch (e: Throwable) {
                 runOnUiThread {
@@ -49,6 +59,28 @@ class QuickCastActivity : Activity() {
                 }
             }
         }
+    }
+
+    /** The TV does not answer: offer to play on the phone instead. */
+    private fun offerPhone(device: DlnaCaster.Device) {
+        if (isFinishing) return
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Can't reach ${device.name}")
+            .setMessage("Play on phone?")
+            .setPositiveButton("Play on phone") { _, _ ->
+                val id = videoId
+                val link = if (id != null) "https://www.youtube.com/watch?v=$id" else sharedUrl
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Could not open the video", Toast.LENGTH_LONG).show()
+                }
+                finish()
+            }
+            .setNeutralButton("Choose another TV") { _, _ -> pick() }
+            .setNegativeButton("Cancel") { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .show()
     }
 
     private fun pick() {

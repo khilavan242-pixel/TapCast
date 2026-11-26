@@ -36,11 +36,15 @@ class _ShellState extends State<Shell> {
   };
 
   void _go(_Page p) {
-    Navigator.of(context).maybePop(); // close the drawer
+    _scaffold.currentState?.closeDrawer();
     setState(() => _page = p);
   }
 
   Future<void> _onBack() async {
+    if (_scaffold.currentState?.isDrawerOpen ?? false) {
+      _scaffold.currentState?.closeDrawer();
+      return;
+    }
     if (_page != _Page.browser) {
       setState(() => _page = _Page.browser);
       return;
@@ -147,7 +151,12 @@ class _ShellState extends State<Shell> {
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                     ),
-                    Text('on ${s.device}', style: theme.textTheme.bodySmall),
+                    Text(
+                      s.next.isNotEmpty ? 'Next: ${s.next}' : 'on ${s.device}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
                   ],
                 ),
               ),

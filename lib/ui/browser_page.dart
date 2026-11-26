@@ -5,38 +5,80 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../models/cast.dart';
 import '../state/cast_controller.dart';
 import '../utils/url_utils.dart';
 import 'devices_sheet.dart';
 
-/// Runs inside the YouTube page: tapping a video does not open it, it is cast to the TV instead.
+/// Runs inside the YouTube page: tells the app when a video page opens (so it plays on the TV),
+/// keeps the phone's own player silent and paused, and hides YouTube's bottom bar and banners.
 const _script = r'''
 (function(){
   if (window.__tcInit) return;
   window.__tcInit = true;
   function post(o) { try { TapCast.postMessage(JSON.stringify(o)); } catch (e) {} }
-  document.addEventListener('click', function(e){
+  var yt = /(^|\.)youtube\.com$/.test(location.hostname);
+  if (yt) {
     try {
-      var a = e.target && e.target.closest ? e.target.closest('a[href*="/watch?v="],a[href*="/shorts/"]') : null;
-      if (!a) return;
-      var href = a.getAttribute('href') || '';
-      var m = /[?&]v=([A-Za-z0-9_-]{11})/.exec(href) || /\/shorts\/([A-Za-z0-9_-]{11})/.exec(href);
-      if (!m) return;
-      e.preventDefault();
-      e.stopPropagation();
-      var ttl = (a.getAttribute('aria-label') || a.textContent || '').replace(/\s+/g, ' ').trim();
-      post({t: 'play', id: m[1], title: ttl.slice(0, 160), href: href});
-    } catch (x) {}
-  }, true);
-  // The phone itself stays silent: sound comes from the TV.
+      var st = document.createElement('style');
+      st.textContent = 'ytm-pivot-bar-renderer,ytm-app-promo-renderer,ytm-promoted-sparkles-web-renderer,' +
+        'ytm-playlist-panel-renderer,ytm-engagement-panel{display:none!important}';
+      document.head.appendChild(st);
+    } catch (e) {}
+  }
+  // Any other website: look for the video the page plays so it can be cast.
+  var seen = {};
+  function add(u, kind) {
+    try {
+      if (!u || u.indexOf('blob:') === 0 || u.indexOf('data:') === 0) return;
+      u = new URL(u, location.href).href;
+      if (seen[u]) return;
+      seen[u] = 1;
+      post({t: 'media', url: u, kind: kind});
+    } catch (e) {}
+  }
+  if (!yt) {
+    var okUrl = function(u) { return /\.(m3u8|mp4)(\?|#|$)/i.test(String(u || '')); };
+    try {
+      var of = window.fetch;
+      if (of) window.fetch = function(a) {
+        try { var u = (a && a.url) ? a.url : a; if (okUrl(u)) add(String(u), 'net'); } catch (e) {}
+        return of.apply(this, arguments);
+      };
+      var oo = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(m, u) {
+        try { if (okUrl(u)) add(String(u), 'net'); } catch (e) {}
+        return oo.apply(this, arguments);
+      };
+    } catch (e) {}
+  }
+  var last = '';
   setInterval(function(){
     try {
       var vs = document.getElementsByTagName('video');
-      for (var i = 0; i < vs.length; i++) { vs[i].muted = true; if (!vs[i].paused) vs[i].pause(); }
+      for (var i = 0; i < vs.length; i++) {
+        if (yt) {
+          // The phone itself stays silent: sound comes from the TV.
+          if (!window.__tcPhone) { vs[i].muted = true; if (!vs[i].paused) vs[i].pause(); }
+        } else {
+          add(vs[i].currentSrc || vs[i].src, 'video');
+          var so = vs[i].getElementsByTagName('source');
+          for (var j = 0; j < so.length; j++) add(so[j].src, 'source');
+        }
+      }
+      if (!yt) {
+        var og = document.querySelector('meta[property="og:video"],meta[property="og:video:url"]');
+        if (og) add(og.content, 'og');
+      }
+      if (location.href !== last) {
+        last = location.href;
+        post({t: 'nav', href: last});
+      }
     } catch (x) {}
-  }, 900);
+  }, 600);
 })();
 ''';
+
 
 /// YouTube with an address bar and a cast button, like a browser made for casting.
 class BrowserPage extends StatefulWidget {
@@ -59,6 +101,10 @@ class BrowserPageState extends State<BrowserPage> {
   String _url = _home;
   int _progress = 0;
   bool _canBack = false;
+  String? _lastCastId;
+  bool _phone = false;
+  final List<String> _media = [];
+  String _mediaPage = '';
 
   CastController get c => widget.controller;
 
@@ -70,10 +116,10 @@ class BrowserPageState extends State<BrowserPage> {
       ..setBackgroundColor(Colors.black)
       ..addJavaScriptChannel('TapCast', onMessageReceived: _onMessage)
       ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: _onNavigate,
         onPageStarted: (url) => _setUrl(url),
         onPageFinished: (url) {
           _setUrl(url);
+          _web.runJavaScript('window.__tcPhone=$_phone;');
           _web.runJavaScript(_script);
         },
         onUrlChange: (change) {
@@ -121,21 +167,25 @@ class BrowserPageState extends State<BrowserPage> {
     return false;
   }
 
-  NavigationDecision _onNavigate(NavigationRequest r) {
-    final id = UrlUtils.videoId(r.url);
-    if (id != null && r.isMainFrame) {
-      _play(id, '', r.url);
-      return NavigationDecision.prevent;
-    }
-    return NavigationDecision.navigate;
-  }
-
   void _onMessage(JavaScriptMessage m) {
     try {
       final j = jsonDecode(m.message) as Map<String, dynamic>;
-      if (j['t'] == 'play') {
-        final id = j['id'] as String?;
-        if (id != null) _play(id, (j['title'] as String?) ?? '', (j['href'] as String?) ?? '');
+      if (j['t'] == 'nav') {
+        final href = (j['href'] as String?) ?? '';
+        _setUrl(href);
+        if (href != _mediaPage) {
+          _mediaPage = href;
+          if (_media.isNotEmpty) setState(_media.clear);
+        }
+        final id = UrlUtils.videoId(href);
+        // A video page opened (tapped in the list or in "up next"): play it on the TV.
+        if (id != null && id != _lastCastId) {
+          _lastCastId = id;
+          if (!_phone) _play(id, '', href);
+        }
+      } else if (j['t'] == 'media') {
+        final u = (j['url'] as String?) ?? '';
+        if (u.isNotEmpty && !_media.contains(u) && _media.length < 12) setState(() => _media.add(u));
       }
     } catch (_) {/* ignore */}
   }
@@ -151,9 +201,57 @@ class BrowserPageState extends State<BrowserPage> {
 
   Future<void> _play(String id, String title, String href) async {
     if (!await ensureDevice(context, c)) return;
-    final ok = await c.castVideo(id, title: title, listUrl: _listFrom(href));
+    final ok = await c.castVideo(id, title: title, listUrl: _listFrom(href), shorts: href.contains('/shorts/'));
     if (!mounted) return;
+    if (ok) {
+      _phone = false;
+      _web.runJavaScript('window.__tcPhone=false;');
+    } else if (c.takeUnreachable()) {
+      await offerPhone(context, c, () => _playOnPhone(id));
+      return;
+    }
     final msg = ok ? 'Casting to ${c.device?.name ?? 'TV'}…' : (c.takeMessage() ?? 'Could not cast');
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+  }
+
+  /// The TV did not answer: let the YouTube page play here, with sound.
+  Future<void> _playOnPhone(String id) async {
+    _phone = true;
+    _lastCastId = id;
+    await _web.runJavaScript('window.__tcPhone=true;');
+    if (!_url.contains(id)) {
+      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id'));
+    } else {
+      await _web.runJavaScript(
+          "try{var v=document.getElementsByTagName('video')[0];if(v){v.muted=false;v.play();}}catch(e){}");
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Playing on this phone. Tap play on the video if it waits.')));
+  }
+
+  /// Any other website: casts the video found on the page (or the page itself).
+  Future<void> _castPage() async {
+    if (!await ensureDevice(context, c)) return;
+    final title = (await _web.getTitle()) ?? '';
+    final link = _media.isNotEmpty
+        ? (_media.firstWhere((u) => u.toLowerCase().contains('.mp4'), orElse: () => _media.first))
+        : _url;
+    final ok = await c.castFiles([
+      CastItem(uri: link, title: title.isEmpty ? 'Web video' : title, mime: 'video/mp4', stream: true),
+    ]);
+    if (!mounted) return;
+    if (ok) {
+      await _web.runJavaScript("try{var vs=document.getElementsByTagName('video');for(var i=0;i<vs.length;i++)vs[i].pause();}catch(e){}");
+    } else if (c.takeUnreachable()) {
+      await offerPhone(context, c, () => _web.runJavaScript("try{var v=document.getElementsByTagName('video')[0];if(v)v.play();}catch(e){}"));
+      return;
+    }
+    if (!mounted) return;
+    final msg = ok ? 'Casting to ${c.device?.name ?? 'TV'}…' : (c.takeMessage() ?? 'Could not cast this page');
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
@@ -165,6 +263,7 @@ class BrowserPageState extends State<BrowserPage> {
     if (t.isEmpty) return;
     final id = UrlUtils.videoId(t);
     if (id != null) {
+      _lastCastId = id;
       _play(id, '', t);
       return;
     }
@@ -200,7 +299,7 @@ class BrowserPageState extends State<BrowserPage> {
                     onTap: () => _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length),
                     decoration: InputDecoration(
                       isDense: true,
-                      hintText: 'Search YouTube or paste a link',
+                      hintText: 'Search YouTube or type a website',
                       filled: true,
                       fillColor: scheme.surfaceContainerHighest,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -208,6 +307,12 @@ class BrowserPageState extends State<BrowserPage> {
                     ),
                   ),
                 ),
+                if (_media.isNotEmpty && pageId == null)
+                  IconButton(
+                    tooltip: 'Cast this video',
+                    onPressed: _castPage,
+                    icon: Icon(Icons.play_circle_fill_rounded, color: scheme.primary),
+                  ),
                 IconButton(
                   tooltip: c.device == null ? 'Choose a TV' : 'Cast to ${c.device!.name}',
                   onPressed: widget.onCast,
@@ -228,11 +333,16 @@ class BrowserPageState extends State<BrowserPage> {
                       case 'copy':
                         await Clipboard.setData(ClipboardData(text: _url));
                       case 'cast':
-                        if (pageId != null) await _play(pageId, '', _url);
+                        if (pageId != null) {
+                          await _play(pageId, '', _url);
+                        } else {
+                          await _castPage();
+                        }
                     }
                   },
                   itemBuilder: (_) => [
-                    if (pageId != null) const PopupMenuItem(value: 'cast', child: Text('Cast this video')),
+                    if (pageId != null || !UrlUtils.isYoutube(_url))
+                      PopupMenuItem(value: 'cast', child: Text(pageId != null ? 'Cast this video' : 'Cast this page')),
                     if (_canBack) const PopupMenuItem(value: 'back', child: Text('Back')),
                     const PopupMenuItem(value: 'reload', child: Text('Reload')),
                     const PopupMenuItem(value: 'home', child: Text('YouTube home')),

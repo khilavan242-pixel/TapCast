@@ -63,6 +63,14 @@ object InnerTube {
                         out.add(PlaylistLister.Entry("https://www.youtube.com/watch?v=$id", titleOf(t)))
                     }
                 }
+                node.optJSONObject("playlistPanelVideoRenderer")?.let { v ->
+                    val id = v.optString("videoId")
+                    if (idRe.matches(id)) out.add(PlaylistLister.Entry("https://www.youtube.com/watch?v=$id", titleOf(v.optJSONObject("title"))))
+                }
+                node.optJSONObject("reelWatchEndpoint")?.let { v ->
+                    val id = v.optString("videoId")
+                    if (idRe.matches(id)) out.add(PlaylistLister.Entry("https://www.youtube.com/watch?v=$id", ""))
+                }
                 val keys = node.keys()
                 while (keys.hasNext()) walk(node.opt(keys.next()), out)
             }
@@ -81,5 +89,40 @@ object InnerTube {
             val vid = e.url.substringAfter("v=")
             vid != id && seen.add(vid)
         }.take(40)
+    }
+
+    private fun distinctAfter(list: List<PlaylistLister.Entry>, id: String, max: Int): List<PlaylistLister.Entry> {
+        val seen = HashSet<String>()
+        return list.filter { e ->
+            val vid = e.url.substringAfter("v=")
+            vid != id && seen.add(vid)
+        }.take(max)
+    }
+
+    /** YouTube's automatic "Mix" playlist for a video (the "Next: ..." list in the YouTube app). */
+    fun mix(id: String): List<PlaylistLister.Entry> {
+        val body = JSONObject().put("videoId", id).put("playlistId", "RD$id").put("context", context())
+        val json = post("next", body)
+        val found = mutableListOf<PlaylistLister.Entry>()
+        walk(json.optJSONObject("contents"), found)
+        return distinctAfter(found, id, 50)
+    }
+
+    /** The Shorts that follow a Short (what swiping up shows in the YouTube app). */
+    fun shorts(id: String): List<PlaylistLister.Entry> {
+        val first = post(
+            "reel/reel_item_watch",
+            JSONObject().put("context", context()).put("disablePlayerResponse", true)
+                .put("playerRequest", JSONObject().put("videoId", id).put("params", "8AEB"))
+                .put("params", "CA8%3D"),
+        )
+        val cont = first.optString("sequenceContinuation")
+        val found = mutableListOf<PlaylistLister.Entry>()
+        walk(first, found)
+        if (cont.isNotBlank()) {
+            val seq = post("reel/reel_watch_sequence", JSONObject().put("context", context()).put("sequenceParams", cont))
+            walk(seq, found)
+        }
+        return distinctAfter(found, id, 40)
     }
 }

@@ -24,6 +24,7 @@ object CastQueue {
     @Volatile private var wasActive = false
     @Volatile private var currentId: String? = null
     @Volatile private var currentTitle = ""
+    @Volatile private var shortsMode = false
 
     /** 0 off, 1 random, 2 smart. */
     @Volatile var shuffle = 0
@@ -39,7 +40,7 @@ object CastQueue {
     }
 
     /** Starts [id] on [dev] and fills the queue behind it. Call off the main thread. */
-    fun begin(context: Context, dev: DlnaCaster.Device, id: String, listUrl: String?, keepHistory: Boolean = false) {
+    fun begin(context: Context, dev: DlnaCaster.Device, id: String, listUrl: String?, keepHistory: Boolean = false, shorts: Boolean = false) {
         val appCtx = context.applicationContext
         app = appCtx
         device = dev
@@ -47,6 +48,7 @@ object CastQueue {
         if (!keepHistory) synchronized(played) { played.clear() }
         synchronized(played) { played.add(id) }
         extendedFor = null
+        shortsMode = shorts
         userStopped = false
         currentId = id
         currentTitle = ""
@@ -56,6 +58,14 @@ object CastQueue {
             listOf(DlnaCaster.Item("https://www.youtube.com/watch?v=$id", "YouTube video", "video/mp4", true)),
         )
         thread(name = "cast-topup") { topUp(id, listUrl, mine) }
+    }
+
+    /** A playlist link with no single video chosen: plays it from the start. Call off the main thread. */
+    fun beginPlaylist(context: Context, dev: DlnaCaster.Device, listUrl: String) {
+        val entries = PlaylistLister.list(listUrl)
+        val first = pick(entries).firstNotNullOfOrNull { videoId(it.url) }
+            ?: throw IllegalStateException("That playlist is empty")
+        begin(context, dev, first, listUrl)
     }
 
     private fun topUp(id: String, listUrl: String?, mine: Int) {
@@ -83,21 +93,37 @@ object CastQueue {
                 Log.w(TAG, "playlist failed: " + t.message)
             }
         }
-        // 2. What YouTube lists as "up next" (one quick request).
+        // 2. Shorts: the next Shorts, back to back.
+        if (shortsMode) {
+            try {
+                val e = InnerTube.shorts(id)
+                if (e.isNotEmpty()) return e
+            } catch (t: Throwable) {
+                Log.w(TAG, "shorts failed: " + t.message)
+            }
+        }
+        // 3. YouTube's own Mix for this video (the "Next:" list in the YouTube app).
+        try {
+            val e = InnerTube.mix(id)
+            if (e.isNotEmpty()) return e
+        } catch (t: Throwable) {
+            Log.w(TAG, "mix (quick) failed: " + t.message)
+        }
+        // 4. What YouTube lists as "up next" (one quick request).
         try {
             val e = InnerTube.related(id)
             if (e.isNotEmpty()) return e
         } catch (t: Throwable) {
             Log.w(TAG, "related failed: " + t.message)
         }
-        // 3. The video's Mix.
+        // 5. The video's Mix through yt-dlp.
         try {
             val e = PlaylistLister.list("https://www.youtube.com/watch?v=$id&list=RD$id")
             if (e.size > 1) return e
         } catch (t: Throwable) {
             Log.w(TAG, "mix failed: " + t.message)
         }
-        // 4. A search for the title (keeps playing even when YouTube gives no related list).
+        // 6. A search for the title (keeps playing even when YouTube gives no related list).
         try {
             var title = currentTitle
             if (title.isBlank() || title == "YouTube video") {
@@ -135,7 +161,7 @@ object CastQueue {
                 val isNew = synchronized(played) { played.add(eid) }
                 if (!isNew) continue
                 items.add(DlnaCaster.Item("https://www.youtube.com/watch?v=$eid", e.title.ifBlank { "YouTube video" }, "video/mp4", true))
-                if (items.size >= 50) break
+                if (items.size >= (if (listUrl != null) 300 else 50)) break
             }
             if (items.isEmpty()) return 0
             DlnaCaster.append(items)
@@ -160,7 +186,7 @@ object CastQueue {
             for (e in entries) {
                 val eid = videoId(e.url) ?: continue
                 if (synchronized(played) { played.contains(eid) }) continue
-                begin(ctx, dev, eid, null, keepHistory = true)
+                begin(ctx, dev, eid, null, keepHistory = true, shorts = shortsMode)
                 return
             }
             // Nothing left to play: let the notification service go.

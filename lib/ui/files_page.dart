@@ -28,6 +28,11 @@ class _FilesPageState extends State<FilesPage> {
     if (!await ensureDevice(context, c)) return;
     final ok = await c.castFiles(_items.sublist(from));
     if (!mounted) return;
+    if (!ok && c.takeUnreachable()) {
+      final first = _items[from];
+      await offerPhone(context, c, () => c.native.viewExternal(first.uri, mime: first.mime));
+      return;
+    }
     final msg = ok ? 'Casting to ${c.device?.name ?? 'TV'}…' : (c.takeMessage() ?? 'Could not cast');
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()

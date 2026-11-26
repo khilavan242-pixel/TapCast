@@ -87,3 +87,20 @@ class _DevicesSheet extends StatelessWidget {
     );
   }
 }
+
+/// The TV did not answer: ask whether to play on the phone instead.
+/// [onPhone] runs when the person says yes.
+Future<void> offerPhone(BuildContext context, CastController c, VoidCallback onPhone) async {
+  final yes = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text("Can't reach ${c.device?.name ?? 'the TV'}"),
+      content: const Text('Play on phone?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Play on phone')),
+      ],
+    ),
+  );
+  if (yes == true) onPhone();
+}

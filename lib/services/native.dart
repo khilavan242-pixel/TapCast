@@ -27,8 +27,26 @@ class Native {
     return (raw ?? const []).map(CastDevice.fromMap).toList();
   }
 
-  Future<void> castYoutube(CastDevice device, String id, {String? listUrl}) =>
-      _methods.invokeMethod<void>('castYoutube', {'device': device.toMap(), 'id': id, 'listUrl': listUrl});
+  Future<void> castYoutube(CastDevice device, String id, {String? listUrl, bool shorts = false}) =>
+      _methods.invokeMethod<void>(
+          'castYoutube', {'device': device.toMap(), 'id': id, 'listUrl': listUrl, 'shorts': shorts});
+
+  /// The titles waiting on the TV and which one plays now.
+  Future<(int, List<QueueEntry>)> queue() async {
+    final raw = await _methods.invokeMapMethod<dynamic, dynamic>('castQueue');
+    final list = (raw?['items'] as List?) ?? const [];
+    return (
+      (raw?['index'] as num?)?.toInt() ?? 0,
+      list
+          .whereType<Map>()
+          .map((m) => QueueEntry(uri: m['uri'] as String? ?? '', title: m['title'] as String? ?? ''))
+          .toList(),
+    );
+  }
+
+  /// Opens a link or file with the phone's own player.
+  Future<void> viewExternal(String uri, {String? mime}) =>
+      _methods.invokeMethod<void>('viewExternal', {'uri': uri, 'mime': mime});
 
   Future<void> castFiles(CastDevice device, List<CastItem> items) =>
       _methods.invokeMethod<void>('castPlay', {'device': device.toMap(), 'items': items.map((e) => e.toMap()).toList()});

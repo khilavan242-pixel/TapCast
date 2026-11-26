@@ -53,6 +53,7 @@ class CastState {
     this.volume = -1,
     this.index = 0,
     this.count = 0,
+    this.next = '',
     this.error,
   });
 
@@ -65,6 +66,7 @@ class CastState {
   final int volume;
   final int index;
   final int count;
+  final String next;
   final String? error;
 
   /// True while a session is running (so the control bar is shown).
@@ -80,6 +82,7 @@ class CastState {
         volume: (m['volume'] as num?)?.toInt() ?? -1,
         index: (m['index'] as num?)?.toInt() ?? 0,
         count: (m['count'] as num?)?.toInt() ?? 0,
+        next: m['next'] as String? ?? '',
         error: m['error'] as String?,
       );
 }
@@ -90,4 +93,12 @@ class CastProgress {
 
   final int position;
   final int duration;
+}
+
+/// One place in the TV's queue.
+class QueueEntry {
+  const QueueEntry({required this.uri, required this.title});
+
+  final String uri;
+  final String title;
 }

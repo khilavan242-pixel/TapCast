@@ -63,7 +63,8 @@ class _RemoteState extends State<_Remote> {
         final thumb = thumbFor(s.uri);
         final vol = (_vol ?? (s.volume >= 0 ? s.volume.toDouble() : 0)).clamp(0, 100).toDouble();
         return SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
+            child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -140,8 +141,50 @@ class _RemoteState extends State<_Remote> {
                   '${_shuffleNames[c.shuffle]} · ${s.index + 1} of ${s.count}',
                   style: theme.textTheme.bodySmall,
                 ),
+                if (c.queue.length > 1) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Up next', style: theme.textTheme.titleSmall),
+                  ),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: c.queue.length,
+                      itemBuilder: (_, i) {
+                        final q = c.queue[i];
+                        final now = i == c.queueIndex;
+                        final t = thumbFor(q.uri);
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          selected: now,
+                          leading: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: SizedBox(
+                              width: 64,
+                              height: 36,
+                              child: t == null
+                                  ? const ColoredBox(color: Colors.black26)
+                                  : Image.network(t, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26)),
+                            ),
+                          ),
+                          title: Text(
+                            q.title.isEmpty ? 'YouTube video' : q.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: now ? const Icon(Icons.equalizer_rounded) : null,
+                          onTap: now ? null : () => c.jumpTo(i),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ],
             ),
+          ),
           ),
         );
       },

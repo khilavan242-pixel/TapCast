@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/cast.dart';
 import '../services/native.dart';
 import '../services/store.dart';
+import '../utils/url_utils.dart';
 
 /// Everything about the TV: which one is chosen, what it plays, the buttons.
 class CastController extends ChangeNotifier {
@@ -29,6 +31,10 @@ class CastController extends ChangeNotifier {
   List<CastDevice> _found = const [];
   bool _searching = false;
   String? _message;
+  bool _unreachable = false;
+  int _queueIndex = 0;
+  List<QueueEntry> _queue = const [];
+  String _queueKey = '';
 
   CastDevice? get device => _device;
   CastState get cast => _cast;
@@ -36,6 +42,8 @@ class CastController extends ChangeNotifier {
   int get shuffle => _shuffle;
   List<RecentItem> get recent => _recent;
   List<CastDevice> get found => _found;
+  List<QueueEntry> get queue => _queue;
+  int get queueIndex => _queueIndex;
   bool get searching => _searching;
 
   /// A short message for the screen (shown once, then cleared).
@@ -43,6 +51,13 @@ class CastController extends ChangeNotifier {
     final m = _message;
     _message = null;
     return m;
+  }
+
+  /// True once after a cast failed because the TV did not answer.
+  bool takeUnreachable() {
+    final u = _unreachable;
+    _unreachable = false;
+    return u;
   }
 
   ThemeMode get themeMode => switch (store.themeMode) {
@@ -68,7 +83,9 @@ class CastController extends ChangeNotifier {
       case 'cast':
         _cast = CastState.fromMap(e);
         if (_cast.status == 'error' && _cast.error != null) _message = _cast.error;
+        _noteTitle();
         notifyListeners();
+        unawaited(_refreshQueue());
       case 'castPos':
         _progress = CastProgress(
           position: (e['position'] as num?)?.toInt() ?? 0,
@@ -77,6 +94,40 @@ class CastController extends ChangeNotifier {
         notifyListeners();
     }
   }
+
+  /// Keeps the titles in Recent filled in once the TV reports them.
+  void _noteTitle() {
+    final id = _cast.uri == null ? null : UrlUtils.videoId(_cast.uri!);
+    final t = _cast.title;
+    if (id == null || t == null || t.isEmpty || t == 'YouTube video') return;
+    final i = _recent.indexWhere((r) => r.id == id);
+    if (i >= 0 && _recent[i].title.isEmpty) {
+      _recent[i] = RecentItem(id: id, title: t);
+      store.recent = _recent;
+    }
+  }
+
+  Future<void> _refreshQueue() async {
+    if (!_cast.active) {
+      if (_queue.isNotEmpty) {
+        _queue = const [];
+        _queueKey = '';
+        notifyListeners();
+      }
+      return;
+    }
+    final key = '${_cast.index}/${_cast.count}/${_cast.uri}';
+    if (key == _queueKey) return;
+    _queueKey = key;
+    try {
+      final (index, list) = await native.queue();
+      _queueIndex = index;
+      _queue = list;
+      notifyListeners();
+    } catch (_) {/* keep the old list */}
+  }
+
+  Future<void> jumpTo(int index) => native.control('jump', value: index);
 
   /// Looks for TVs on the Wi-Fi.
   Future<void> search() async {
@@ -105,12 +156,13 @@ class CastController extends ChangeNotifier {
   }
 
   /// Plays a YouTube video on the chosen TV and keeps going with the next ones.
-  Future<bool> castVideo(String id, {String? title, String? listUrl}) async {
+  Future<bool> castVideo(String id, {String? title, String? listUrl, bool shorts = false}) async {
     final d = _device;
     if (d == null) return false;
     try {
-      await native.castYoutube(d, id, listUrl: listUrl);
+      await native.castYoutube(d, id, listUrl: listUrl, shorts: shorts);
     } catch (e) {
+      _unreachable = e is PlatformException && e.code == 'unreachable';
       _message = 'Could not reach ${d.name}';
       notifyListeners();
       return false;
@@ -126,6 +178,7 @@ class CastController extends ChangeNotifier {
       await native.castFiles(d, items);
       return true;
     } catch (e) {
+      _unreachable = e is PlatformException && e.code == 'unreachable';
       _message = 'Could not reach ${d.name}';
       notifyListeners();
       return false;

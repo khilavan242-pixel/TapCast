@@ -51,7 +51,12 @@ class RecentPage extends StatelessWidget {
                     title: Text(r.title.isEmpty ? 'YouTube video' : r.title, maxLines: 2, overflow: TextOverflow.ellipsis),
                     onTap: () async {
                       if (!await ensureDevice(context, controller)) return;
-                      await controller.castVideo(r.id, title: r.title);
+                      final ok = await controller.castVideo(r.id, title: r.title);
+                      if (!ok && controller.takeUnreachable() && context.mounted) {
+                        await offerPhone(context, controller, () {
+                          controller.native.viewExternal('https://www.youtube.com/watch?v=${r.id}');
+                        });
+                      }
                     },
                   );
                 },

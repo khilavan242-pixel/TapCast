@@ -156,6 +156,25 @@ object DlnaCaster {
     /** True while casting to a device whose volume can be set (used for the phone's volume keys). */
     fun canControlVolume(): Boolean = session?.device?.renderUrl != null
 
+    /** True when the TV answers on its control port (checked before casting). Call off the main thread. */
+    fun reachable(device: Device): Boolean = try {
+        val u = java.net.URL(device.controlUrl)
+        val port = if (u.port > 0) u.port else 80
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress(u.host, port), 2500) }
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    /** The titles and links in the running queue, with the position now playing. */
+    fun queue(): Map<String, Any?> {
+        val s = session ?: return mapOf("index" to 0, "items" to emptyList<Any>())
+        val list = s.items.mapIndexed { i, it ->
+            mapOf("uri" to it.uri, "title" to (s.titleAt(i) ?: it.title))
+        }
+        return mapOf("index" to s.index, "items" to list)
+    }
+
     fun state(): Map<String, Any?> = session?.toMap() ?: mapOf("type" to "cast", "status" to "idle")
 
     /** Finds a direct, ready-to-play address for a YouTube link. Call off the main thread. */
@@ -703,6 +722,11 @@ object DlnaCaster {
         @Volatile private var jumpTo = -1
         @Volatile private var finishedUp = false
 
+        fun titleAt(i: Int): String? {
+            val item = items.getOrNull(i) ?: return null
+            return liveTitles[i]?.takeIf { it.isNotBlank() } ?: item.title
+        }
+
         fun toMap(): Map<String, Any?> = mapOf(
             "type" to "cast",
             "status" to status,
@@ -711,6 +735,7 @@ object DlnaCaster {
             "uri" to items.getOrNull(index)?.uri,
             "stream" to (items.getOrNull(index)?.stream ?: false),
             "index" to index,
+            "next" to (titleAt(index + 1) ?: ""),
             "count" to items.size,
             "volume" to volume,
             "error" to error,
@@ -1004,6 +1029,7 @@ object DlnaCaster {
                     }
                     "next" -> jumpTo = minOf(index + 1, items.size)
                     "previous" -> jumpTo = maxOf(index - 1, 0)
+                    "jump" -> if (value >= 0 && value < items.size) jumpTo = value
                     "stop" -> {
                         cancelled = true
                         try {

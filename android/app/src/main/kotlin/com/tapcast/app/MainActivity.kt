@@ -91,15 +91,42 @@ class MainActivity : FlutterActivity() {
                     return
                 }
                 val listUrl = call.argument<String>("listUrl")
+                val shorts = call.argument<Boolean>("shorts") ?: false
                 thread(name = "dlna-start") {
                     try {
-                        CastQueue.begin(applicationContext, device, id, listUrl)
+                        if (!DlnaCaster.reachable(device)) {
+                            main.post { result.error("unreachable", "Can't reach ${device.name}", null) }
+                            return@thread
+                        }
+                        CastQueue.begin(applicationContext, device, id, listUrl, shorts = shorts)
                         main.post { result.success(true) }
                     } catch (e: Throwable) {
                         main.post { result.error("cast_failed", e.message ?: "Could not reach the TV", null) }
                     }
                 }
             }
+
+            // Opens a file or link with the phone's own player.
+            "viewExternal" -> {
+                val uri = call.argument<String>("uri")
+                if (uri == null) {
+                    result.error("bad_args", "uri is required", null)
+                    return
+                }
+                try {
+                    val mime = call.argument<String>("mime")
+                    val view = Intent(Intent.ACTION_VIEW).apply {
+                        if (mime.isNullOrBlank()) setData(Uri.parse(uri)) else setDataAndType(Uri.parse(uri), mime)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(view, "Play with"))
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("no_player", e.message ?: "No player found", null)
+                }
+            }
+
+            "castQueue" -> result.success(DlnaCaster.queue())
 
             // Files from the phone.
             "castPlay" -> {
@@ -111,6 +138,10 @@ class MainActivity : FlutterActivity() {
                 }
                 thread(name = "dlna-start") {
                     try {
+                        if (!DlnaCaster.reachable(device)) {
+                            main.post { result.error("unreachable", "Can't reach ${device.name}", null) }
+                            return@thread
+                        }
                         CastQueue.userStop()
                         DlnaCaster.start(
                             applicationContext,
