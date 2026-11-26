@@ -212,7 +212,7 @@ class BrowserPage extends StatefulWidget {
   State<BrowserPage> createState() => BrowserPageState();
 }
 
-class BrowserPageState extends State<BrowserPage> {
+class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   static const _home = 'https://m.youtube.com/';
 
   late final WebViewController _web;
@@ -239,6 +239,11 @@ class BrowserPageState extends State<BrowserPage> {
   bool _playerMusic = false;
   String _playerId = '';
   String _playerTitle = '';
+  bool _ctl = false;
+  Timer? _ctlT;
+  bool _wantPlay = true;
+  bool _bg = false;
+  int _lastResume = 0;
   double _fr = 12;
   double _fb = 12;
 
@@ -270,8 +275,22 @@ class BrowserPageState extends State<BrowserPage> {
       // Sound may start without a tap on the page (used for "Play on phone").
       platform.setMediaPlaybackRequiresUserGesture(false);
     }
+    WidgetsBinding.instance.addObserver(this);
     c.addListener(_syncPhone);
     _ev = c.native.events.listen(_onNativeEvent);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _bg = state != AppLifecycleState.resumed;
+  }
+
+  void _showCtl() {
+    _ctlT?.cancel();
+    setState(() => _ctl = true);
+    _ctlT = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _ctl = false);
+    });
   }
 
   bool get _music => _url.contains('music.youtube.com');
@@ -291,6 +310,8 @@ class BrowserPageState extends State<BrowserPage> {
             c.native.phoneEnd().catchError((Object _) {});
           }
         } else {
+          if (action == 'pause') _wantPlay = false;
+          if (action == 'resume') _wantPlay = true;
           final t = _webActive ? _web : (_playerOn ? (_player ?? _web) : _web);
           t.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
         }
@@ -351,6 +372,8 @@ class BrowserPageState extends State<BrowserPage> {
     if (p == null || !_playerOn || url.startsWith('about:')) return;
     await p.runJavaScript('window.TapCast = window.TapCastPlayer;');
     await p.runJavaScript(_script);
+    await p.runJavaScript(
+        "try{var st=document.createElement('style');st.textContent='ytm-mobile-topbar-renderer,header.mobile-topbar-header-content,ytm-app-promo-renderer{display:none!important}';document.head.appendChild(st);}catch(e){}");
     await p.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !_big});');
     for (final ms in const [0, 1500, 3500]) {
       if (ms > 0) await Future<void>.delayed(Duration(milliseconds: ms));
@@ -385,7 +408,15 @@ class BrowserPageState extends State<BrowserPage> {
         c.native.setPhoneVideo(ready: !music, playing: playing, keep: true).catchError((Object _) {});
       }
       _phonePos = (j['pos'] as num?)?.toInt() ?? 0;
-      c.native.phonePos(_phonePos, (j['dur'] as num?)?.toInt() ?? 0).catchError((Object _) {});
+      final dur = (j['dur'] as num?)?.toInt() ?? 0;
+      c.native.phonePos(_phonePos, dur).catchError((Object _) {});
+      // The page pauses itself when the window shrinks or the app is left: keep it playing
+      // (unless the person paused it or the video has ended).
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (!playing && _wantPlay && (_pip || _bg) && (dur == 0 || _phonePos < dur - 2) && now - _lastResume > 1200) {
+        _lastResume = now;
+        _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('resume',0);");
+      }
     } catch (_) {/* ignore */}
   }
 
@@ -396,21 +427,27 @@ class BrowserPageState extends State<BrowserPage> {
     _playerPlaying = false;
     _playerId = '';
     _playerTitle = '';
+    _wantPlay = true;
     _player?.loadRequest(Uri.parse('about:blank'));
     if (mounted) setState(() {});
   }
 
   void _setBig(bool b) {
     setState(() => _big = b);
+    if (b) _showCtl();
     _player?.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !b});');
   }
 
   void _playerCmd(String a) {
+    if (a == 'pause') _wantPlay = false;
+    if (a == 'resume') _wantPlay = true;
     _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('$a',0);");
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _ctlT?.cancel();
     c.removeListener(_syncPhone);
     _ev?.cancel();
     _address.dispose();
@@ -833,27 +870,47 @@ class BrowserPageState extends State<BrowserPage> {
         ),
       ]);
     } else if (_big && !_pip) {
+      Widget cbtn(IconData i, VoidCallback f, {double size = 30}) => IconButton(
+            onPressed: () {
+              f();
+              _showCtl();
+            },
+            iconSize: size,
+            color: Colors.white,
+            icon: Icon(i),
+          );
       children.add(Positioned(
         left: 0,
         right: 0,
         top: 0,
-        height: 40,
-        child: Container(
-          color: Colors.black87,
-          child: Row(children: [
-            IconButton(
-              onPressed: () => _setBig(false),
-              icon: const Icon(Icons.close_fullscreen_rounded, color: Colors.white, size: 20),
+        height: size.width * 9 / 16,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => _ctl ? setState(() => _ctl = false) : _showCtl(),
+          child: IgnorePointer(
+            ignoring: !_ctl,
+            child: AnimatedOpacity(
+              opacity: _ctl ? 1 : 0,
+              duration: const Duration(milliseconds: 200),
+              child: Container(
+                color: Colors.black38,
+                child: Stack(children: [
+                  Positioned(left: 4, top: 4, child: cbtn(Icons.keyboard_arrow_down_rounded, () => _setBig(false), size: 34)),
+                  Positioned(right: 4, top: 4, child: cbtn(Icons.close_rounded, () => c.setPhoneMode(false))),
+                  Center(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      cbtn(Icons.skip_previous_rounded, () => _playerCmd('previous'), size: 40),
+                      const SizedBox(width: 12),
+                      cbtn(_playerPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded,
+                          () => _playerCmd(_playerPlaying ? 'pause' : 'resume'), size: 60),
+                      const SizedBox(width: 12),
+                      cbtn(Icons.skip_next_rounded, () => _playerCmd('next'), size: 40),
+                    ]),
+                  ),
+                ]),
+              ),
             ),
-            Expanded(
-              child: Text(_playerTitle,
-                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-            ),
-            IconButton(
-              onPressed: () => c.setPhoneMode(false),
-              icon: const Icon(Icons.close_rounded, color: Colors.white, size: 20),
-            ),
-          ]),
+          ),
         ),
       ));
     }
