@@ -76,6 +76,21 @@ const _script = r'''
   } catch (e) {}
   window.__tcSetPhone = function(on) {
     window.__tcPhone = !!on;
+    // The hidden phone player: if the page pauses itself (window shrinks, app left), play again at once.
+    if (!window.__tcPauseHook) {
+      window.__tcPauseHook = 1;
+      document.addEventListener('pause', function(e) {
+        var v = e.target;
+        if (!window.__tcForce || !window.__tcPhone || window.__tcUserPause || !v || v.ended) return;
+        setTimeout(function() {
+          try {
+            if (window.__tcPhone && !window.__tcUserPause && v.paused && !v.ended) {
+              var pr = v.play(); if (pr && pr.catch) pr.catch(function() {});
+            }
+          } catch (x) {}
+        }, 150);
+      }, true);
+    }
     try {
       if (window.__tcPoll) { clearInterval(window.__tcPoll); window.__tcPoll = 0; }
       var v = media();
@@ -97,10 +112,11 @@ const _script = r'''
     try {
       var v = media();
       if (!v) return;
-      if (a === 'pause') v.pause();
-      else if (a === 'resume') v.play();
+      if (a === 'pause') { window.__tcUserPause = true; v.pause(); }
+      else if (a === 'resume') { window.__tcUserPause = false; v.play(); }
       else if (a === 'seek') v.currentTime = val;
       else if (a === 'next') {
+        window.__tcUserPause = false;
         var n = document.querySelector('button[aria-label*="Next" i],.ytp-next-button,button[class*="next" i]');
         if (n) n.click(); else if (isFinite(v.duration)) v.currentTime = v.duration;
       } else if (a === 'previous') {
@@ -322,11 +338,11 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         final pl = _player;
         if (_playerOn && pl != null) {
           pl.runJavaScript('window.__tcPip&&window.__tcPip(${on || !_big});');
-          if (on && _playerPlaying) {
+          if (on && _wantPlay) {
             // The page may pause itself when the app goes to the background: keep it playing.
-            for (final ms in const [600, 1500, 3000]) {
+            for (final ms in const [300, 900, 1800, 3000]) {
               Future<void>.delayed(Duration(milliseconds: ms), () {
-                if (mounted && _playerOn && _pip && _playerPlaying) _playerCmd('resume');
+                if (mounted && _playerOn && _pip && _wantPlay) _playerCmd('resume');
               });
             }
           }
@@ -370,7 +386,7 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   Future<void> _initPlayer(String url) async {
     final p = _player;
     if (p == null || !_playerOn || url.startsWith('about:')) return;
-    await p.runJavaScript('window.TapCast = window.TapCastPlayer;');
+    await p.runJavaScript('window.TapCast = window.TapCastPlayer; window.__tcForce = true;');
     await p.runJavaScript(_script);
     await p.runJavaScript(
         "try{var st=document.createElement('style');st.textContent='ytm-mobile-topbar-renderer,header.mobile-topbar-header-content,ytm-app-promo-renderer{display:none!important}';document.head.appendChild(st);}catch(e){}");
@@ -413,7 +429,7 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       // The page pauses itself when the window shrinks or the app is left: keep it playing
       // (unless the person paused it or the video has ended).
       final now = DateTime.now().millisecondsSinceEpoch;
-      if (!playing && _wantPlay && (_pip || _bg) && (dur == 0 || _phonePos < dur - 2) && now - _lastResume > 1200) {
+      if (!playing && _wantPlay && (_pip || _bg) && (dur == 0 || _phonePos < dur - 2) && now - _lastResume > 700) {
         _lastResume = now;
         _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('resume',0);");
       }
@@ -506,6 +522,10 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
           // In phone mode the page plays it itself; otherwise it goes to the TV.
           if (c.phoneMode) {
             _playOnPhone(id);
+            // The page behind has no sound of its own: step back to the list instead of a dead player.
+            _web.canGoBack().then((v) {
+              if (v) _web.goBack();
+            });
           } else {
             _play(id, '', href);
           }
@@ -655,6 +675,11 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     c.setPhoneMode(true);
     _syncPhone();
     await p.loadRequest(Uri.parse('https://$host/watch?v=$id$t'));
+    // The video plays in the hidden page; the visible page goes back to the list so you can keep browsing.
+    if (UrlUtils.videoId(_url) == id && await _web.canGoBack()) {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (mounted && UrlUtils.videoId(_url) == id) await _web.goBack();
+    }
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
