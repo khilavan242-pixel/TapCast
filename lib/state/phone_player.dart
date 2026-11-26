@@ -39,6 +39,7 @@ class PhonePlayer extends ChangeNotifier {
   int repeat = 0; // 0 off, 1 all, 2 one
   String? error;
 
+  final Map<String, Map<String, dynamic>> _pre = {};
   int _seq = 0;
   int _fillSeq = 0;
   bool _ended = false;
@@ -72,6 +73,7 @@ class PhonePlayer extends ChangeNotifier {
   /// Starts [id] and fills the queue with what YouTube plays next.
   Future<void> start(String id, {bool audio = false, bool isShorts = false, String title = ''}) async {
     _dropController();
+    _pre.clear();
     queue
       ..clear()
       ..add(PhoneItem(id, title));
@@ -101,6 +103,18 @@ class PhonePlayer extends ChangeNotifier {
     }
     notifyListeners();
     _publish(_lastPlaying ? 'playing' : 'paused');
+    if (_lastPlaying) unawaited(_prefetch());
+  }
+
+  /// Looks up the next video's stream while this one plays, so it starts at once.
+  Future<void> _prefetch() async {
+    if (!_active || index + 1 >= queue.length) return;
+    final nid = queue[index + 1].id;
+    if (_pre.containsKey(nid)) return;
+    try {
+      final info = await native.phoneResolve(nid, audio: audioOnly);
+      if (_active) _pre[nid] = info;
+    } catch (_) {/* it is resolved when its turn comes */}
   }
 
   void _dropController() {
@@ -114,7 +128,7 @@ class PhonePlayer extends ChangeNotifier {
   }
 
   Future<(VideoPlayerController, Map<String, dynamic>)> _openStream(String id, {required bool legacy}) async {
-    final info = await native.phoneResolve(id, legacy: legacy, audio: audioOnly);
+    final info = (legacy ? null : _pre.remove(id)) ?? await native.phoneResolve(id, legacy: legacy, audio: audioOnly);
     final vc = VideoPlayerController.networkUrl(
       Uri.parse(info['url'] as String),
       httpHeaders: legacy ? const {'User-Agent': _legacyAgent} : const <String, String>{},
@@ -163,6 +177,7 @@ class PhonePlayer extends ChangeNotifier {
       notifyListeners();
       _publish('playing');
       unawaited(native.setPhoneVideo(ready: !audioOnly, playing: true));
+      unawaited(_prefetch());
     } catch (_) {
       if (seq != _seq) return;
       loading = false;
@@ -278,6 +293,7 @@ class PhonePlayer extends ChangeNotifier {
     _fillSeq++;
     _active = false;
     _dropController();
+    _pre.clear();
     queue.clear();
     loading = false;
     inPip = false;

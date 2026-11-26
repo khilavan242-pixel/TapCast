@@ -1,7 +1,7 @@
 name: tapcast
 description: Cast YouTube and files from your phone to a DLNA TV. Share a video and it plays on the TV.
 publish_to: "none"
-version: 0.3.0+4
+version: 0.3.1+5
 
 environment:
   sdk: ">=3.5.0 <4.0.0"

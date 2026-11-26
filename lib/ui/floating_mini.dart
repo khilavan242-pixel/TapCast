@@ -8,9 +8,12 @@ import 'remote_sheet.dart';
 /// A small floating window inside TapCast (drag it anywhere) while something plays on the TV
 /// or on the phone. Outside the app, the notification has the buttons.
 class FloatingMini extends StatefulWidget {
-  const FloatingMini({super.key, required this.controller});
+  const FloatingMini({super.key, required this.controller, this.phoneInline = false});
 
   final CastController controller;
+
+  /// True while the page itself shows the phone player (so no floating window is needed).
+  final bool phoneInline;
 
   @override
   State<FloatingMini> createState() => _FloatingMiniState();
@@ -30,7 +33,7 @@ class _FloatingMiniState extends State<FloatingMini> {
       listenable: Listenable.merge([c, c.phone]),
       builder: (context, _) {
         final p = c.phone;
-        final phoneOn = p.active && !p.pageOpen;
+        final phoneOn = p.active && !p.pageOpen && !widget.phoneInline;
         final castOn = c.cast.active;
         if (!phoneOn && !castOn) return const SizedBox.shrink();
         final theme = Theme.of(context);

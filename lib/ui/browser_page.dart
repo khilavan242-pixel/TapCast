@@ -10,6 +10,7 @@ import '../state/cast_controller.dart';
 import '../utils/url_utils.dart';
 import 'devices_sheet.dart';
 import 'phone_player_page.dart';
+import 'phone_view.dart';
 
 /// Runs inside the YouTube page: tells the app when a video page opens (so it plays on the TV),
 /// keeps the phone's own player silent and paused, and hides YouTube's bottom bar and banners.
@@ -52,6 +53,19 @@ const _script = r'''
       };
     } catch (e) {}
   }
+  window.__tcSetPhone = function(on) {
+    try {
+      var e = document.getElementById('tc-phone-style');
+      if (on) {
+        if (!e) {
+          e = document.createElement('style');
+          e.id = 'tc-phone-style';
+          e.textContent = '#player-container-id,.player-container,ytm-custom-control,.watch-skeleton-container{display:none!important}';
+          document.head.appendChild(e);
+        }
+      } else if (e) { e.remove(); }
+    } catch (x) {}
+  };
   var last = '';
   setInterval(function(){
     try {
@@ -102,6 +116,7 @@ class BrowserPageState extends State<BrowserPage> {
   int _progress = 0;
   bool _canBack = false;
   String? _lastCastId;
+  bool _phoneOn = false;
   final List<String> _media = [];
   String _mediaPage = '';
 
@@ -119,6 +134,7 @@ class BrowserPageState extends State<BrowserPage> {
         onPageFinished: (url) {
           _setUrl(url);
           _web.runJavaScript(_script);
+          _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(${c.phone.active});');
         },
         onUrlChange: (change) {
           if (change.url != null) _setUrl(change.url!);
@@ -128,10 +144,20 @@ class BrowserPageState extends State<BrowserPage> {
         },
       ))
       ..loadRequest(Uri.parse(_home));
+    c.phone.addListener(_syncPhone);
+  }
+
+  /// While the phone plays, the page's own player is hidden: TapCast's player sits above the page.
+  void _syncPhone() {
+    final on = c.phone.active;
+    if (on == _phoneOn) return;
+    _phoneOn = on;
+    _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone($on);');
   }
 
   @override
   void dispose() {
+    c.phone.removeListener(_syncPhone);
     _address.dispose();
     _focus.dispose();
     super.dispose();
@@ -227,17 +253,23 @@ class BrowserPageState extends State<BrowserPage> {
       ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
-  /// The TV did not answer: play here with TapCast's own player (background, floating window).
+  /// The TV did not answer: play here with TapCast's own player. It sits above the page
+  /// (background play, floating window when you leave the app).
   Future<void> _playOnPhone(String id) async {
     _lastCastId = id;
+    final first = !c.phone.active;
     if (c.cast.active) await c.control('stop');
+    var title = '';
+    if (first) {
+      title = (await _web.getTitle()) ?? '';
+      title = title.replaceAll(RegExp(r'\s*-\s*YouTube( Music)?$'), '');
+    }
     await c.phone.start(
       id,
       audio: _url.contains('music.youtube.com'),
       isShorts: _url.contains('/shorts/'),
+      title: title,
     );
-    if (!mounted) return;
-    await openPhonePlayer(context, c);
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
@@ -374,6 +406,8 @@ class BrowserPageState extends State<BrowserPage> {
           ),
         ),
         if (_progress < 100) LinearProgressIndicator(value: _progress / 100, minHeight: 2),
+        if (c.phone.active)
+          PhoneView(controller: c, inline: true, onExpand: () => openPhonePlayer(context, c)),
         Expanded(child: WebViewWidget(controller: _web)),
       ],
     );

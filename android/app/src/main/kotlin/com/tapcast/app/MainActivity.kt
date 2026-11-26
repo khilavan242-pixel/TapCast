@@ -31,6 +31,7 @@ class MainActivity : FlutterActivity() {
     private var pendingMediaResult: MethodChannel.Result? = null
     private var pipReady = false
     private var pipPlaying = false
+    @Volatile private var resumed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -342,10 +343,10 @@ class MainActivity : FlutterActivity() {
             .setAspectRatio(Rational(16, 9))
             .setActions(
                 listOf(
+                    pipAction(R.drawable.ic_prev, "Previous", 21, CastService.ACTION_PREV),
                     if (pipPlaying) pipAction(R.drawable.ic_pause, "Pause", 22, CastService.ACTION_TOGGLE)
                     else pipAction(R.drawable.ic_play, "Play", 22, CastService.ACTION_TOGGLE),
                     pipAction(R.drawable.ic_next, "Next", 23, CastService.ACTION_NEXT),
-                    pipAction(R.drawable.ic_close, "Close", 24, CastService.ACTION_STOP),
                 ),
             )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -377,6 +378,22 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         DlnaCaster.emitExternal(mapOf("type" to "pip", "on" to isInPictureInPictureMode))
+        if (!isInPictureInPictureMode && pipReady) {
+            // The window was closed with its X (not expanded back): stop, like the YouTube app.
+            main.postDelayed({
+                if (!resumed && pipReady) DlnaCaster.phoneControl?.invoke("stop", 0)
+            }, 700)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+    }
+
+    override fun onPause() {
+        resumed = false
+        super.onPause()
     }
 
     /** While casting, the phone's volume keys change the TV volume. */
