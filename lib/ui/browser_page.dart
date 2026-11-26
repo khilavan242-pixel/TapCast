@@ -129,20 +129,47 @@ const _script = r'''
       } catch (x) {}
     }, 1000);
   }
-  // Floating window: only the video is shown.
+  // Floating window: only the video is shown. Everything around the video is hidden and the
+  // video's parents lose their transforms, so "fixed full size" really means the whole window.
   window.__tcPip = function(on) {
     try {
+      if (window.__tcPipT) { clearInterval(window.__tcPipT); window.__tcPipT = 0; }
       var e = document.getElementById('tc-pip-style');
-      if (on) {
-        if (!e) {
-          e = document.createElement('style');
-          e.id = 'tc-pip-style';
-          e.textContent = 'html,body{overflow:hidden!important;background:#000!important}' +
-            'video{position:fixed!important;left:0!important;top:0!important;width:100vw!important;' +
-            'height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important}';
-          document.head.appendChild(e);
+      if (!on) {
+        if (e) e.remove();
+        var h = document.querySelectorAll('[data-tc-h]');
+        for (var i = 0; i < h.length; i++) h[i].removeAttribute('data-tc-h');
+        var f = document.querySelectorAll('[data-tc-f]');
+        for (var k = 0; k < f.length; k++) { f[k].style.cssText = f[k].getAttribute('data-tc-f'); f[k].removeAttribute('data-tc-f'); }
+        return;
+      }
+      if (!e) {
+        e = document.createElement('style');
+        e.id = 'tc-pip-style';
+        e.textContent = 'html,body{overflow:hidden!important;background:#000!important}' +
+          '[data-tc-h]{display:none!important}' +
+          'video{position:fixed!important;left:0!important;top:0!important;width:100vw!important;' +
+          'height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important}';
+        document.head.appendChild(e);
+      }
+      var apply = function() {
+        var v = media();
+        if (!v) return;
+        for (var el = v; el && el !== document.body; el = el.parentElement) {
+          if (!el.hasAttribute('data-tc-f')) el.setAttribute('data-tc-f', el.style.cssText || '');
+          el.style.setProperty('transform', 'none', 'important');
+          el.style.setProperty('filter', 'none', 'important');
+          el.style.setProperty('contain', 'none', 'important');
+          el.style.setProperty('perspective', 'none', 'important');
+          var p = el.parentElement;
+          if (!p) break;
+          for (var s = p.firstElementChild; s; s = s.nextElementSibling) {
+            if (s !== el && !/^(SCRIPT|STYLE|LINK)$/.test(s.tagName)) s.setAttribute('data-tc-h', '1');
+          }
         }
-      } else if (e) { e.remove(); }
+      };
+      apply();
+      window.__tcPipT = setInterval(apply, 1000);
     } catch (x) {}
   };
   var last = '';
@@ -274,6 +301,14 @@ class BrowserPageState extends State<BrowserPage> {
         final pl = _player;
         if (_playerOn && pl != null) {
           pl.runJavaScript('window.__tcPip&&window.__tcPip(${on || !_big});');
+          if (on && _playerPlaying) {
+            // The page may pause itself when the app goes to the background: keep it playing.
+            for (final ms in const [600, 1500, 3000]) {
+              Future<void>.delayed(Duration(milliseconds: ms), () {
+                if (mounted && _playerOn && _pip && _playerPlaying) _playerCmd('resume');
+              });
+            }
+          }
         } else {
           _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
         }
