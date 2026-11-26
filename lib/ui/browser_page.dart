@@ -76,21 +76,6 @@ const _script = r'''
   } catch (e) {}
   window.__tcSetPhone = function(on) {
     window.__tcPhone = !!on;
-    // The hidden phone player: if the page pauses itself (window shrinks, app left), play again at once.
-    if (!window.__tcPauseHook) {
-      window.__tcPauseHook = 1;
-      document.addEventListener('pause', function(e) {
-        var v = e.target;
-        if (!window.__tcForce || !window.__tcPhone || window.__tcUserPause || !v || v.ended) return;
-        setTimeout(function() {
-          try {
-            if (window.__tcPhone && !window.__tcUserPause && v.paused && !v.ended) {
-              var pr = v.play(); if (pr && pr.catch) pr.catch(function() {});
-            }
-          } catch (x) {}
-        }, 150);
-      }, true);
-    }
     try {
       if (window.__tcPoll) { clearInterval(window.__tcPoll); window.__tcPoll = 0; }
       var v = media();
@@ -112,11 +97,10 @@ const _script = r'''
     try {
       var v = media();
       if (!v) return;
-      if (a === 'pause') { window.__tcUserPause = true; v.pause(); }
-      else if (a === 'resume') { window.__tcUserPause = false; v.play(); }
+      if (a === 'pause') v.pause();
+      else if (a === 'resume') v.play();
       else if (a === 'seek') v.currentTime = val;
       else if (a === 'next') {
-        window.__tcUserPause = false;
         var n = document.querySelector('button[aria-label*="Next" i],.ytp-next-button,button[class*="next" i]');
         if (n) n.click(); else if (isFinite(v.duration)) v.currentTime = v.duration;
       } else if (a === 'previous') {
@@ -145,47 +129,20 @@ const _script = r'''
       } catch (x) {}
     }, 1000);
   }
-  // Floating window: only the video is shown. Everything around the video is hidden and the
-  // video's parents lose their transforms, so "fixed full size" really means the whole window.
+  // Floating window: only the video is shown.
   window.__tcPip = function(on) {
     try {
-      if (window.__tcPipT) { clearInterval(window.__tcPipT); window.__tcPipT = 0; }
       var e = document.getElementById('tc-pip-style');
-      if (!on) {
-        if (e) e.remove();
-        var h = document.querySelectorAll('[data-tc-h]');
-        for (var i = 0; i < h.length; i++) h[i].removeAttribute('data-tc-h');
-        var f = document.querySelectorAll('[data-tc-f]');
-        for (var k = 0; k < f.length; k++) { f[k].style.cssText = f[k].getAttribute('data-tc-f'); f[k].removeAttribute('data-tc-f'); }
-        return;
-      }
-      if (!e) {
-        e = document.createElement('style');
-        e.id = 'tc-pip-style';
-        e.textContent = 'html,body{overflow:hidden!important;background:#000!important}' +
-          '[data-tc-h]{display:none!important}' +
-          'video{position:fixed!important;left:0!important;top:0!important;width:100vw!important;' +
-          'height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important}';
-        document.head.appendChild(e);
-      }
-      var apply = function() {
-        var v = media();
-        if (!v) return;
-        for (var el = v; el && el !== document.body; el = el.parentElement) {
-          if (!el.hasAttribute('data-tc-f')) el.setAttribute('data-tc-f', el.style.cssText || '');
-          el.style.setProperty('transform', 'none', 'important');
-          el.style.setProperty('filter', 'none', 'important');
-          el.style.setProperty('contain', 'none', 'important');
-          el.style.setProperty('perspective', 'none', 'important');
-          var p = el.parentElement;
-          if (!p) break;
-          for (var s = p.firstElementChild; s; s = s.nextElementSibling) {
-            if (s !== el && !/^(SCRIPT|STYLE|LINK)$/.test(s.tagName)) s.setAttribute('data-tc-h', '1');
-          }
+      if (on) {
+        if (!e) {
+          e = document.createElement('style');
+          e.id = 'tc-pip-style';
+          e.textContent = 'html,body{overflow:hidden!important;background:#000!important}' +
+            'video{position:fixed!important;left:0!important;top:0!important;width:100vw!important;' +
+            'height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important}';
+          document.head.appendChild(e);
         }
-      };
-      apply();
-      window.__tcPipT = setInterval(apply, 1000);
+      } else if (e) { e.remove(); }
     } catch (x) {}
   };
   var last = '';
@@ -228,7 +185,7 @@ class BrowserPage extends StatefulWidget {
   State<BrowserPage> createState() => BrowserPageState();
 }
 
-class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
+class BrowserPageState extends State<BrowserPage> {
   static const _home = 'https://m.youtube.com/';
 
   late final WebViewController _web;
@@ -246,22 +203,6 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   StreamSubscription<Map<dynamic, dynamic>>? _ev;
   final List<String> _media = [];
   String _mediaPage = '';
-  // Second page that plays "on phone" videos, so the main page can keep browsing.
-  WebViewController? _player;
-  final GlobalKey _playerKey = GlobalKey();
-  bool _playerOn = false;
-  bool _big = false;
-  bool _playerPlaying = false;
-  bool _playerMusic = false;
-  String _playerId = '';
-  String _playerTitle = '';
-  bool _ctl = false;
-  Timer? _ctlT;
-  bool _wantPlay = true;
-  bool _bg = false;
-  int _lastResume = 0;
-  double _fr = 12;
-  double _fb = 12;
 
   CastController get c => widget.controller;
 
@@ -277,6 +218,7 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         onPageFinished: (url) {
           _setUrl(url);
           _web.runJavaScript(_script);
+          _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(${c.phoneMode});');
         },
         onUrlChange: (change) {
           if (change.url != null) _setUrl(change.url!);
@@ -291,22 +233,8 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       // Sound may start without a tap on the page (used for "Play on phone").
       platform.setMediaPlaybackRequiresUserGesture(false);
     }
-    WidgetsBinding.instance.addObserver(this);
     c.addListener(_syncPhone);
     _ev = c.native.events.listen(_onNativeEvent);
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    _bg = state != AppLifecycleState.resumed;
-  }
-
-  void _showCtl() {
-    _ctlT?.cancel();
-    setState(() => _ctl = true);
-    _ctlT = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _ctl = false);
-    });
   }
 
   bool get _music => _url.contains('music.youtube.com');
@@ -319,36 +247,19 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         final value = (e['value'] as num?)?.toInt() ?? 0;
         if (action == 'stop') {
           c.setPhoneMode(false);
-          _stopPlayer();
           if (_webActive) {
             _webActive = false;
             _web.runJavaScript("window.__tcCmd&&window.__tcCmd('pause',0);");
             c.native.phoneEnd().catchError((Object _) {});
           }
         } else {
-          if (action == 'pause') _wantPlay = false;
-          if (action == 'resume') _wantPlay = true;
-          final t = _webActive ? _web : (_playerOn ? (_player ?? _web) : _web);
-          t.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
+          _web.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
         }
       case 'pip':
         final on = e['on'] == true;
         if (on == _pip) return;
         setState(() => _pip = on);
-        final pl = _player;
-        if (_playerOn && pl != null) {
-          pl.runJavaScript('window.__tcPip&&window.__tcPip(${on || !_big});');
-          if (on && _wantPlay) {
-            // The page may pause itself when the app goes to the background: keep it playing.
-            for (final ms in const [300, 900, 1800, 3000]) {
-              Future<void>.delayed(Duration(milliseconds: ms), () {
-                if (mounted && _playerOn && _pip && _wantPlay) _playerCmd('resume');
-              });
-            }
-          }
-        } else {
-          _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
-        }
+        _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
     }
   }
 
@@ -357,113 +268,18 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     final on = c.phoneMode;
     if (on == _phoneOn) return;
     _phoneOn = on;
+    _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone($on);');
     if (on) {
-      c.native.setPhoneVideo(ready: !_playerMusic, playing: true, keep: true).catchError((Object _) {});
+      c.native.setPhoneVideo(ready: !_music, playing: true, keep: true).catchError((Object _) {});
     } else {
-      _stopPlayer();
       _pubKey = '';
       c.native.setPhoneVideo(ready: false, playing: false, keep: false).catchError((Object _) {});
       c.native.phoneEnd().catchError((Object _) {});
     }
   }
 
-  WebViewController _ensurePlayer() {
-    final old = _player;
-    if (old != null) return old;
-    final p = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.black)
-      ..addJavaScriptChannel('TapCastPlayer', onMessageReceived: _onPlayerMessage)
-      ..setNavigationDelegate(NavigationDelegate(onPageFinished: (url) => _initPlayer(url)));
-    final platform = p.platform;
-    if (platform is AndroidWebViewController) {
-      platform.setMediaPlaybackRequiresUserGesture(false);
-    }
-    _player = p;
-    return p;
-  }
-
-  Future<void> _initPlayer(String url) async {
-    final p = _player;
-    if (p == null || !_playerOn || url.startsWith('about:')) return;
-    await p.runJavaScript('window.TapCast = window.TapCastPlayer; window.__tcForce = true;');
-    await p.runJavaScript(_script);
-    await p.runJavaScript(
-        "try{var st=document.createElement('style');st.textContent='ytm-mobile-topbar-renderer,header.mobile-topbar-header-content,ytm-app-promo-renderer{display:none!important}';document.head.appendChild(st);}catch(e){}");
-    await p.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !_big});');
-    for (final ms in const [0, 1500, 3500]) {
-      if (ms > 0) await Future<void>.delayed(Duration(milliseconds: ms));
-      if (!mounted || !_playerOn) return;
-      await p.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(true);');
-    }
-  }
-
-  void _onPlayerMessage(JavaScriptMessage m) {
-    try {
-      final j = jsonDecode(m.message) as Map<String, dynamic>;
-      if (j['t'] != 'pstate' || !_playerOn) return;
-      final playing = j['playing'] == true;
-      final title = (j['title'] as String?) ?? '';
-      final href = (j['href'] as String?) ?? '';
-      final id = UrlUtils.videoId(href) ?? '';
-      final music = href.contains('music.youtube.com');
-      if (playing != _playerPlaying || title != _playerTitle || id != _playerId || music != _playerMusic) {
-        setState(() {
-          _playerPlaying = playing;
-          _playerTitle = title;
-          if (id.isNotEmpty) _playerId = id;
-          _playerMusic = music;
-        });
-      }
-      final key = '$id|$playing|$title|p';
-      if (key != _pubKey) {
-        _pubKey = key;
-        c.native
-            .phoneState(status: playing ? 'playing' : 'paused', id: id, title: title, index: 0, count: 1)
-            .catchError((Object _) {});
-        c.native.setPhoneVideo(ready: !music, playing: playing, keep: true).catchError((Object _) {});
-      }
-      _phonePos = (j['pos'] as num?)?.toInt() ?? 0;
-      final dur = (j['dur'] as num?)?.toInt() ?? 0;
-      c.native.phonePos(_phonePos, dur).catchError((Object _) {});
-      // The page pauses itself when the window shrinks or the app is left: keep it playing
-      // (unless the person paused it or the video has ended).
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (!playing && _wantPlay && (_pip || _bg) && (dur == 0 || _phonePos < dur - 2) && now - _lastResume > 700) {
-        _lastResume = now;
-        _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('resume',0);");
-      }
-    } catch (_) {/* ignore */}
-  }
-
-  void _stopPlayer() {
-    if (!_playerOn && _player == null) return;
-    _playerOn = false;
-    _big = false;
-    _playerPlaying = false;
-    _playerId = '';
-    _playerTitle = '';
-    _wantPlay = true;
-    _player?.loadRequest(Uri.parse('about:blank'));
-    if (mounted) setState(() {});
-  }
-
-  void _setBig(bool b) {
-    setState(() => _big = b);
-    if (b) _showCtl();
-    _player?.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !b});');
-  }
-
-  void _playerCmd(String a) {
-    if (a == 'pause') _wantPlay = false;
-    if (a == 'resume') _wantPlay = true;
-    _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('$a',0);");
-  }
-
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _ctlT?.cancel();
     c.removeListener(_syncPhone);
     _ev?.cancel();
     _address.dispose();
@@ -520,15 +336,7 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         if (id != null && id != _lastCastId) {
           _lastCastId = id;
           // In phone mode the page plays it itself; otherwise it goes to the TV.
-          if (c.phoneMode) {
-            _playOnPhone(id);
-            // The page behind has no sound of its own: step back to the list instead of a dead player.
-            _web.canGoBack().then((v) {
-              if (v) _web.goBack();
-            });
-          } else {
-            _play(id, '', href);
-          }
+          if (!c.phoneMode) _play(id, '', href);
         }
       } else if (j['t'] == 'pstate') {
         final web = j['web'] == true;
@@ -583,11 +391,10 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         return;
       }
       await _toPhone(castId, c.progress.position);
-    } else if (c.phoneMode && (pageId != null || _playerId.isNotEmpty)) {
-      final id = _playerId.isNotEmpty ? _playerId : pageId!;
-      _lastCastId = id;
+    } else if (c.phoneMode && pageId != null) {
+      _lastCastId = pageId;
       final pos = _phonePos;
-      await _play(id, '', 'https://m.youtube.com/watch?v=$id');
+      await _play(pageId, '', _url);
       if (c.cast.active || c.phoneMode == false) unawaited(_seekWhenPlaying(pos));
     } else if (pageId != null) {
       _lastCastId = pageId;
@@ -612,7 +419,14 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     await c.control('stop');
     await Future<void>.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
-    await _playOnPhone(id, start: pos);
+    if (_url.contains(id)) {
+      await _web.runJavaScript(
+          "try{var v=document.querySelector('video');if(v&&$pos>3)v.currentTime=$pos;}catch(e){}");
+    } else {
+      final t = pos > 3 ? '&t=${pos}s' : '';
+      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id$t'));
+    }
+    c.setPhoneMode(true);
     _snack('Playing on this phone');
   }
 
@@ -660,26 +474,13 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
 
   /// The TV did not answer: the page plays here, like a normal browser (sound, notification
   /// buttons, keeps playing in the background, floating window when you leave the app).
-  Future<void> _playOnPhone(String id, {int start = 0}) async {
+  Future<void> _playOnPhone(String id) async {
     _lastCastId = id;
     if (c.cast.active) await c.control('stop');
-    final p = _ensurePlayer();
-    final host = _url.contains('music.youtube.com') ? 'music.youtube.com' : 'm.youtube.com';
-    final t = start > 3 ? '&t=${start}s' : '';
-    setState(() {
-      _playerOn = true;
-      _big = false;
-      _playerId = id;
-      _playerMusic = host.startsWith('music');
-    });
-    c.setPhoneMode(true);
-    _syncPhone();
-    await p.loadRequest(Uri.parse('https://$host/watch?v=$id$t'));
-    // The video plays in the hidden page; the visible page goes back to the list so you can keep browsing.
-    if (UrlUtils.videoId(_url) == id && await _web.canGoBack()) {
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      if (mounted && UrlUtils.videoId(_url) == id) await _web.goBack();
+    if (!_url.contains(id)) {
+      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id'));
     }
+    c.setPhoneMode(true);
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
@@ -729,8 +530,7 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     final scheme = theme.colorScheme;
     final casting = c.cast.active;
     final pageId = UrlUtils.videoId(_url);
-    return Stack(children: [
-      Column(
+    return Column(
       children: [
         Visibility(
           visible: !_pip,
@@ -837,135 +637,6 @@ class BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         if (_progress < 100 && !_pip) LinearProgressIndicator(value: _progress / 100, minHeight: 2),
         Expanded(child: WebViewWidget(controller: _web)),
       ],
-      ),
-      if (_playerOn && _player != null) _playerLayer(scheme),
-    ]);
-  }
-
-  Widget _playerLayer(ColorScheme scheme) {
-    if (!_pip) {
-      // No floating window inside the app: the page keeps playing out of sight
-      // (sound + notification); the system floating window shows it when you leave the app.
-      return Positioned(
-        right: 0,
-        bottom: 0,
-        width: 80,
-        height: 45,
-        child: IgnorePointer(
-          child: Opacity(opacity: 0.01, child: WebViewWidget(key: _playerKey, controller: _player!)),
-        ),
-      );
-    }
-    final full = _pip || _big;
-    const w = 220.0;
-    const h = 124.0;
-    final size = MediaQuery.of(context).size;
-    final video = WebViewWidget(key: _playerKey, controller: _player!);
-    Widget btn(IconData i, VoidCallback f) => Expanded(
-          child: InkWell(onTap: f, child: Center(child: Icon(i, color: Colors.white, size: 20))),
-        );
-    final children = <Widget>[Positioned.fill(child: video)];
-    if (!_pip && !_big) {
-      children.addAll([
-        Positioned(
-          left: 0,
-          right: 0,
-          top: 0,
-          height: 28,
-          child: GestureDetector(
-            onPanUpdate: (d) => setState(() {
-              _fr = (_fr - d.delta.dx).clamp(0.0, size.width - w);
-              _fb = (_fb - d.delta.dy).clamp(0.0, size.height - h - 100);
-            }),
-            child: Container(
-              color: Colors.black54,
-              alignment: Alignment.centerRight,
-              child: InkWell(
-                onTap: () => c.setPhoneMode(false),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(Icons.close_rounded, color: Colors.white, size: 18),
-                ),
-              ),
-            ),
-          ),
-        ),
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          height: 34,
-          child: Container(
-            color: Colors.black54,
-            child: Row(children: [
-              btn(Icons.skip_previous_rounded, () => _playerCmd('previous')),
-              btn(_playerPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                  () => _playerCmd(_playerPlaying ? 'pause' : 'resume')),
-              btn(Icons.skip_next_rounded, () => _playerCmd('next')),
-              btn(Icons.open_in_full_rounded, () => _setBig(true)),
-            ]),
-          ),
-        ),
-      ]);
-    } else if (_big && !_pip) {
-      Widget cbtn(IconData i, VoidCallback f, {double size = 30}) => IconButton(
-            onPressed: () {
-              f();
-              _showCtl();
-            },
-            iconSize: size,
-            color: Colors.white,
-            icon: Icon(i),
-          );
-      children.add(Positioned(
-        left: 0,
-        right: 0,
-        top: 0,
-        height: size.width * 9 / 16,
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onTap: () => _ctl ? setState(() => _ctl = false) : _showCtl(),
-          child: IgnorePointer(
-            ignoring: !_ctl,
-            child: AnimatedOpacity(
-              opacity: _ctl ? 1 : 0,
-              duration: const Duration(milliseconds: 200),
-              child: Container(
-                color: Colors.black38,
-                child: Stack(children: [
-                  Positioned(left: 4, top: 4, child: cbtn(Icons.keyboard_arrow_down_rounded, () => _setBig(false), size: 34)),
-                  Positioned(right: 4, top: 4, child: cbtn(Icons.close_rounded, () => c.setPhoneMode(false))),
-                  Center(
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      cbtn(Icons.skip_previous_rounded, () => _playerCmd('previous'), size: 40),
-                      const SizedBox(width: 12),
-                      cbtn(_playerPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded,
-                          () => _playerCmd(_playerPlaying ? 'pause' : 'resume'), size: 60),
-                      const SizedBox(width: 12),
-                      cbtn(Icons.skip_next_rounded, () => _playerCmd('next'), size: 40),
-                    ]),
-                  ),
-                ]),
-              ),
-            ),
-          ),
-        ),
-      ));
-    }
-    return Positioned(
-      left: full ? 0 : null,
-      top: full ? 0 : null,
-      right: full ? 0 : _fr,
-      bottom: full ? 0 : _fb,
-      width: full ? null : w,
-      height: full ? null : h,
-      child: Material(
-        color: Colors.black,
-        elevation: full ? 0 : 8,
-        borderRadius: full ? null : BorderRadius.circular(12),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(children: children),
-      ),
     );
   }
 }
