@@ -78,7 +78,7 @@ class SettingsPage extends StatelessWidget {
               label: const Text('Stop casting and close TapCast'),
             ),
             const SizedBox(height: 16),
-            Text('TapCast 0.4.0', style: theme.textTheme.bodySmall),
+            Text('TapCast 0.4.1', style: theme.textTheme.bodySmall),
           ],
         );
       },

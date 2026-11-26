@@ -334,6 +334,20 @@ class BrowserPageState extends State<BrowserPage> {
     return 'https://www.youtube.com/playlist?list=$list';
   }
 
+  /// The cast button: one tap sends what is open to the saved TV (also from "playing on phone");
+  /// with no TV saved, or nothing to cast, it opens the TV list.
+  Future<void> _castTap() async {
+    final id = UrlUtils.videoId(_url);
+    if (c.device != null && id != null) {
+      _lastCastId = id;
+      await _play(id, '', _url);
+    } else if (c.device != null && !UrlUtils.isYoutube(_url) && _media.isNotEmpty) {
+      await _castPage();
+    } else {
+      widget.onCast();
+    }
+  }
+
   /// Casts [id] to the TV (asks which TV the first time).
   Future<void> castId(String id, {String title = '', String href = ''}) => _play(id, title, href);
 
@@ -457,12 +471,19 @@ class BrowserPageState extends State<BrowserPage> {
                     onPressed: _castPage,
                     icon: Icon(Icons.play_circle_fill_rounded, color: scheme.primary),
                   ),
-                IconButton(
-                  tooltip: c.device == null ? 'Choose a TV' : 'Cast to ${c.device!.name}',
-                  onPressed: widget.onCast,
-                  icon: Icon(
-                    casting ? Icons.cast_connected_rounded : Icons.cast_rounded,
-                    color: casting || c.device != null ? scheme.primary : null,
+                GestureDetector(
+                  onLongPress: widget.onCast,
+                  child: IconButton(
+                    tooltip: c.device == null ? 'Choose a TV' : 'Tap: cast to ${c.device!.name}. Hold: change TV',
+                    onPressed: _castTap,
+                    icon: Icon(
+                      casting ? Icons.cast_connected_rounded : Icons.cast_rounded,
+                      color: casting
+                          ? scheme.primary
+                          : c.phoneMode
+                              ? scheme.tertiary
+                              : (c.device != null ? scheme.primary : null),
+                    ),
                   ),
                 ),
                 PopupMenuButton<String>(
