@@ -60,6 +60,12 @@ object CastQueue {
         thread(name = "cast-topup") { topUp(id, listUrl, mine) }
     }
 
+    /** The videos that should follow [id] (Mix, Shorts or related), for playing on the phone. */
+    fun nextList(id: String, shorts: Boolean): List<PlaylistLister.Entry> {
+        shortsMode = shorts
+        return related(id, null)
+    }
+
     /** A playlist link with no single video chosen: plays it from the start. Call off the main thread. */
     fun beginPlaylist(context: Context, dev: DlnaCaster.Device, listUrl: String) {
         val entries = PlaylistLister.list(listUrl)

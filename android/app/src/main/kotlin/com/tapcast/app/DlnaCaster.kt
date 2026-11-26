@@ -75,6 +75,12 @@ object DlnaCaster {
 
     @Volatile private var session: Session? = null
 
+    /** While the phone itself plays (no TV session), the notification buttons are sent here. */
+    @Volatile var phoneControl: ((String, Int) -> Unit)? = null
+    @Volatile var phoneState: Map<String, Any?>? = null
+
+    fun castActive(): Boolean = session != null
+
     // ---- public API ---------------------------------------------------------------
 
     /** Blocks for a few seconds while listening for devices. Call off the main thread. */
@@ -134,7 +140,11 @@ object DlnaCaster {
 
     /** pause | resume | next | previous | stop | seek (value = seconds) | volume (value = 0..100) | volumeUp | volumeDown */
     fun control(action: String, value: Int = 0) {
-        val s = session ?: return
+        val s = session
+        if (s == null) {
+            phoneControl?.invoke(action, value)
+            return
+        }
         if (action == "stop") CastQueue.userStop()
         thread(name = "dlna-control") { s.control(action, value) }
     }
@@ -175,7 +185,8 @@ object DlnaCaster {
         return mapOf("index" to s.index, "items" to list)
     }
 
-    fun state(): Map<String, Any?> = session?.toMap() ?: mapOf("type" to "cast", "status" to "idle")
+    fun state(): Map<String, Any?> =
+        session?.toMap() ?: phoneState ?: mapOf("type" to "cast", "status" to "idle")
 
     /** Finds a direct, ready-to-play address for a YouTube link. Call off the main thread. */
     /** Title, direct address and length (seconds) of a YouTube video, for the in-app player. */

@@ -1,6 +1,12 @@
 package com.tapcast.app
 
 import android.Manifest
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
+import android.util.Rational
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -23,6 +29,8 @@ class MainActivity : FlutterActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var eventSink: EventChannel.EventSink? = null
     private var pendingMediaResult: MethodChannel.Result? = null
+    private var pipReady = false
+    private var pipPlaying = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,6 +63,11 @@ class MainActivity : FlutterActivity() {
                 DlnaCaster.listener = null
             }
         })
+
+        // Notification buttons while the phone itself plays go to the Flutter player.
+        DlnaCaster.phoneControl = { action, value ->
+            main.post { eventSink?.success(mapOf("type" to "phoneCtl", "action" to action, "value" to value)) }
+        }
 
         MethodChannel(messenger, "tapcast/native").setMethodCallHandler(::onMethodCall)
     }
@@ -127,6 +140,83 @@ class MainActivity : FlutterActivity() {
             }
 
             "castQueue" -> result.success(DlnaCaster.queue())
+
+            // ---- playing on the phone itself ----
+            "phoneResolve" -> {
+                val id = call.argument<String>("id")
+                if (id == null) {
+                    result.error("bad_args", "id is required", null)
+                    return
+                }
+                thread(name = "phone-resolve") {
+                    try {
+                        val r = DlnaCaster.resolveForPlayer(
+                            "https://www.youtube.com/watch?v=$id",
+                            call.argument<Boolean>("legacy") == true,
+                            call.argument<Boolean>("audio") == true,
+                            720,
+                        )
+                        main.post { result.success(mapOf("title" to r.first, "url" to r.second, "duration" to r.third)) }
+                    } catch (e: Throwable) {
+                        main.post { result.error("resolve_failed", e.message ?: "Could not open this video", null) }
+                    }
+                }
+            }
+
+            "phoneNext" -> {
+                val id = call.argument<String>("id")
+                if (id == null) {
+                    result.error("bad_args", "id is required", null)
+                    return
+                }
+                val shorts = call.argument<Boolean>("shorts") == true
+                thread(name = "phone-next") {
+                    val list = try {
+                        CastQueue.nextList(id, shorts).mapNotNull { e ->
+                            val vid = CastQueue.videoId(e.url) ?: return@mapNotNull null
+                            mapOf("id" to vid, "title" to e.title)
+                        }
+                    } catch (e: Throwable) {
+                        emptyList()
+                    }
+                    main.post { result.success(list) }
+                }
+            }
+
+            "phoneState" -> {
+                val id = call.argument<String>("id") ?: ""
+                val map = mapOf<String, Any?>(
+                    "type" to "cast",
+                    "status" to (call.argument<String>("status") ?: "playing"),
+                    "device" to "this phone",
+                    "title" to call.argument<String>("title"),
+                    "uri" to "https://www.youtube.com/watch?v=$id",
+                    "index" to (call.argument<Int>("index") ?: 0),
+                    "count" to (call.argument<Int>("count") ?: 1),
+                )
+                DlnaCaster.phoneState = map
+                if (!CastService.isRunning()) CastService.start(applicationContext, "this phone")
+                CastService.update(applicationContext, map)
+                result.success(null)
+            }
+
+            "phonePos" -> {
+                CastService.progress(applicationContext, call.argument<Int>("pos") ?: 0, call.argument<Int>("dur") ?: 0)
+                result.success(null)
+            }
+
+            "phoneEnd" -> {
+                DlnaCaster.phoneState = null
+                if (!DlnaCaster.castActive()) CastService.stop(applicationContext)
+                result.success(null)
+            }
+
+            "setPhoneVideo" -> {
+                pipReady = call.argument<Boolean>("ready") == true
+                pipPlaying = call.argument<Boolean>("playing") == true
+                applyPipParams()
+                result.success(null)
+            }
 
             // Files from the phone.
             "castPlay" -> {
@@ -233,6 +323,60 @@ class MainActivity : FlutterActivity() {
             mapOf("uri" to uri.toString(), "title" to name.substringBeforeLast('.'), "mime" to mime)
         }
         pending.success(list)
+    }
+
+    // ---- picture-in-picture (floating video window while the phone plays a video) ----
+
+    private fun pipAction(icon: Int, label: String, code: Int, action: String): RemoteAction =
+        RemoteAction(
+            Icon.createWithResource(this, icon), label, label,
+            PendingIntent.getBroadcast(
+                this, code,
+                Intent(this, CastActionReceiver::class.java).setAction(action),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            ),
+        )
+
+    private fun pipParams(): PictureInPictureParams {
+        val b = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .setActions(
+                listOf(
+                    if (pipPlaying) pipAction(R.drawable.ic_pause, "Pause", 22, CastService.ACTION_TOGGLE)
+                    else pipAction(R.drawable.ic_play, "Play", 22, CastService.ACTION_TOGGLE),
+                    pipAction(R.drawable.ic_next, "Next", 23, CastService.ACTION_NEXT),
+                    pipAction(R.drawable.ic_close, "Close", 24, CastService.ACTION_STOP),
+                ),
+            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            b.setAutoEnterEnabled(pipReady)
+        }
+        return b.build()
+    }
+
+    private fun applyPipParams() {
+        try {
+            setPictureInPictureParams(pipParams())
+        } catch (e: Exception) {
+            // picture-in-picture is not available on this device
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12+ enters by itself (auto-enter); older versions are asked here.
+        if (pipReady && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            try {
+                enterPictureInPictureMode(pipParams())
+            } catch (e: Exception) {
+                // not available
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        DlnaCaster.emitExternal(mapOf("type" to "pip", "on" to isInPictureInPictureMode))
     }
 
     /** While casting, the phone's volume keys change the TV volume. */

@@ -337,7 +337,10 @@ class CastService : Service() {
             session?.let { style.setMediaSession(it.sessionToken) }
             b.setSmallIcon(R.drawable.ic_stat_tapcast)
                 .setContentTitle(title)
-                .setContentText(if (status == "loading") "Starting on $device..." else "Casting to $device")
+                .setContentText(
+                    if (device == "this phone") (if (status == "loading") "Starting..." else "Playing on this phone")
+                    else if (status == "loading") "Starting on $device..." else "Casting to $device",
+                )
                 .setSubText(device)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)

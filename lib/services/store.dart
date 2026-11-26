@@ -21,6 +21,23 @@ class RecentItem {
   }
 }
 
+/// A saved web page.
+class Bookmark {
+  const Bookmark({required this.url, required this.title});
+
+  final String url;
+  final String title;
+
+  Map<String, Object?> toMap() => {'url': url, 'title': title};
+
+  static Bookmark? fromMap(Object? m) {
+    if (m is! Map) return null;
+    final url = m['url'];
+    if (url is! String || url.isEmpty) return null;
+    return Bookmark(url: url, title: (m['title'] as String?) ?? '');
+  }
+}
+
 /// Small settings kept on the phone. The `last_device` key is also read by the share pop-up (native).
 class Store {
   Store._(this._prefs);
@@ -72,4 +89,20 @@ class Store {
   }
 
   set recent(List<RecentItem> v) => _prefs.setString('recent', jsonEncode([for (final e in v) e.toMap()]));
+
+  List<Bookmark> get bookmarks {
+    final text = _prefs.getString('bookmarks');
+    if (text == null) return const [];
+    try {
+      final list = jsonDecode(text) as List<dynamic>;
+      return [
+        for (final e in list)
+          if (Bookmark.fromMap(e) != null) Bookmark.fromMap(e)!,
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  set bookmarks(List<Bookmark> v) => _prefs.setString('bookmarks', jsonEncode([for (final e in v) e.toMap()]));
 }

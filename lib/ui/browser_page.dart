@@ -9,6 +9,7 @@ import '../models/cast.dart';
 import '../state/cast_controller.dart';
 import '../utils/url_utils.dart';
 import 'devices_sheet.dart';
+import 'phone_player_page.dart';
 
 /// Runs inside the YouTube page: tells the app when a video page opens (so it plays on the TV),
 /// keeps the phone's own player silent and paused, and hides YouTube's bottom bar and banners.
@@ -101,7 +102,6 @@ class BrowserPageState extends State<BrowserPage> {
   int _progress = 0;
   bool _canBack = false;
   String? _lastCastId;
-  bool _phone = false;
   final List<String> _media = [];
   String _mediaPage = '';
 
@@ -118,7 +118,6 @@ class BrowserPageState extends State<BrowserPage> {
         onPageStarted: (url) => _setUrl(url),
         onPageFinished: (url) {
           _setUrl(url);
-          _web.runJavaScript('window.__tcPhone=$_phone;');
           _web.runJavaScript(_script);
         },
         onUrlChange: (change) {
@@ -158,6 +157,11 @@ class BrowserPageState extends State<BrowserPage> {
     return '${uri.host}${uri.path == '/' ? '' : uri.path}';
   }
 
+  /// Opens [url] in the page (from a bookmark).
+  void open(String url) {
+    _web.loadRequest(Uri.parse(url));
+  }
+
   /// Back inside the page; false when there is nothing to go back to.
   Future<bool> goBack() async {
     if (await _web.canGoBack()) {
@@ -181,7 +185,11 @@ class BrowserPageState extends State<BrowserPage> {
         // A video page opened (tapped in the list or in "up next"): play it on the TV.
         if (id != null && id != _lastCastId) {
           _lastCastId = id;
-          if (!_phone) _play(id, '', href);
+          if (c.phone.active) {
+            _playOnPhone(id);
+          } else {
+            _play(id, '', href);
+          }
         }
       } else if (j['t'] == 'media') {
         final u = (j['url'] as String?) ?? '';
@@ -209,10 +217,7 @@ class BrowserPageState extends State<BrowserPage> {
     }
     final ok = await c.castVideo(id, title: title, listUrl: _listFrom(href), shorts: href.contains('/shorts/'));
     if (!mounted) return;
-    if (ok) {
-      _phone = false;
-      _web.runJavaScript('window.__tcPhone=false;');
-    } else if (c.takeUnreachable()) {
+    if (!ok && c.takeUnreachable()) {
       await offerPhone(context, c, () => _playOnPhone(id));
       return;
     }
@@ -222,21 +227,17 @@ class BrowserPageState extends State<BrowserPage> {
       ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
-  /// The TV did not answer: let the YouTube page play here, with sound.
+  /// The TV did not answer: play here with TapCast's own player (background, floating window).
   Future<void> _playOnPhone(String id) async {
-    _phone = true;
     _lastCastId = id;
-    await _web.runJavaScript('window.__tcPhone=true;');
-    if (!_url.contains(id)) {
-      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id'));
-    } else {
-      await _web.runJavaScript(
-          "try{var v=document.getElementsByTagName('video')[0];if(v){v.muted=false;v.play();}}catch(e){}");
-    }
+    if (c.cast.active) await c.control('stop');
+    await c.phone.start(
+      id,
+      audio: _url.contains('music.youtube.com'),
+      isShorts: _url.contains('/shorts/'),
+    );
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Playing on this phone. Tap play on the video if it waits.')));
+    await openPhonePlayer(context, c);
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
@@ -344,6 +345,9 @@ class BrowserPageState extends State<BrowserPage> {
                         await goBack();
                       case 'copy':
                         await Clipboard.setData(ClipboardData(text: _url));
+                      case 'bookmark':
+                        final title = (await _web.getTitle()) ?? '';
+                        c.toggleBookmark(_url, title);
                       case 'cast':
                         if (pageId != null) {
                           await _play(pageId, '', _url);
@@ -356,6 +360,10 @@ class BrowserPageState extends State<BrowserPage> {
                     if (pageId != null || !UrlUtils.isYoutube(_url))
                       PopupMenuItem(value: 'cast', child: Text(pageId != null ? 'Cast this video' : 'Cast this page')),
                     if (_canBack) const PopupMenuItem(value: 'back', child: Text('Back')),
+                    PopupMenuItem(
+                      value: 'bookmark',
+                      child: Text(c.isBookmarked(_url) ? 'Remove bookmark' : 'Add bookmark'),
+                    ),
                     const PopupMenuItem(value: 'reload', child: Text('Reload')),
                     const PopupMenuItem(value: 'home', child: Text('YouTube home')),
                     const PopupMenuItem(value: 'copy', child: Text('Copy link')),

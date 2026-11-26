@@ -3,13 +3,14 @@ import 'package:flutter/services.dart';
 
 import '../state/cast_controller.dart';
 import 'browser_page.dart';
+import 'bookmarks_page.dart';
 import 'devices_sheet.dart';
 import 'files_page.dart';
 import 'recent_page.dart';
-import 'remote_sheet.dart';
+import 'floating_mini.dart';
 import 'settings_page.dart';
 
-enum _Page { browser, files, recent, settings }
+enum _Page { browser, bookmarks, files, recent, settings }
 
 /// The main screen: a menu, the pages, and a small remote while something plays on the TV.
 class Shell extends StatefulWidget {
@@ -30,6 +31,7 @@ class _ShellState extends State<Shell> {
 
   static const _titles = {
     _Page.browser: 'Browser',
+    _Page.bookmarks: 'Bookmarks',
     _Page.files: 'Phone files',
     _Page.recent: 'Recent',
     _Page.settings: 'Settings',
@@ -38,6 +40,11 @@ class _ShellState extends State<Shell> {
   void _go(_Page p) {
     _scaffold.currentState?.closeDrawer();
     setState(() => _page = p);
+  }
+
+  void _openUrl(String url) {
+    _go(_Page.browser);
+    _browser.currentState?.open(url);
   }
 
   Future<void> _onBack() async {
@@ -78,7 +85,9 @@ class _ShellState extends State<Shell> {
             key: _scaffold,
             drawer: _drawer(theme),
             body: SafeArea(
-              child: Column(
+              child: Stack(
+                children: [
+                  Column(
                 children: [
                   if (_page != _Page.browser)
                     Padding(
@@ -103,72 +112,22 @@ class _ShellState extends State<Shell> {
                           onMenu: () => _scaffold.currentState?.openDrawer(),
                           onCast: () => showDevicesSheet(context, c),
                         ),
+                        BookmarksPage(controller: c, onOpen: _openUrl),
                         FilesPage(controller: c),
                         RecentPage(controller: c),
                         SettingsPage(controller: c),
                       ],
                     ),
                   ),
-                  if (c.cast.active) _miniRemote(theme),
+                ],
+              ),
+                  Positioned.fill(child: FloatingMini(controller: c)),
                 ],
               ),
             ),
           ),
         );
       },
-    );
-  }
-
-  Widget _miniRemote(ThemeData theme) {
-    final s = c.cast;
-    final thumb = thumbFor(s.uri);
-    return Material(
-      color: theme.colorScheme.surfaceContainerHigh,
-      child: InkWell(
-        onTap: () => showRemote(context, c),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: SizedBox(
-                  width: 64,
-                  height: 36,
-                  child: thumb == null
-                      ? const ColoredBox(color: Colors.black26, child: Icon(Icons.tv_rounded))
-                      : Image.network(thumb, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26)),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      s.title?.isNotEmpty == true ? s.title! : 'Casting',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      s.next.isNotEmpty ? 'Next: ${s.next}' : 'on ${s.device}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                onPressed: () => c.control(s.paused ? 'resume' : 'pause'),
-                icon: Icon(s.paused ? Icons.play_arrow_rounded : Icons.pause_rounded),
-              ),
-              IconButton(onPressed: () => c.control('next'), icon: const Icon(Icons.skip_next_rounded)),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -194,6 +153,7 @@ class _ShellState extends State<Shell> {
               ),
             ),
             item(_Page.browser, Icons.language_rounded, 'Browser'),
+            item(_Page.bookmarks, Icons.bookmark_rounded, 'Bookmarks'),
             item(_Page.files, Icons.folder_rounded, 'Phone files'),
             item(_Page.recent, Icons.history_rounded, 'Recent'),
             const Divider(),

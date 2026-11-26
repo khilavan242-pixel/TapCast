@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../models/cast.dart';
 import '../services/native.dart';
 import '../services/store.dart';
+import 'phone_player.dart';
 import '../utils/url_utils.dart';
 
 /// Everything about the TV: which one is chosen, what it plays, the buttons.
@@ -14,6 +15,8 @@ class CastController extends ChangeNotifier {
     _device = store.device;
     _shuffle = store.shuffle;
     _recent = List.of(store.recent);
+    _bookmarks = List.of(store.bookmarks);
+    phone = PhonePlayer(native);
     unawaited(native.setShuffle(_shuffle));
     _sub = native.events.listen(_onEvent);
     unawaited(_syncState());
@@ -21,6 +24,8 @@ class CastController extends ChangeNotifier {
 
   final Native native;
   final Store store;
+  late final PhonePlayer phone;
+  List<Bookmark> _bookmarks = [];
   StreamSubscription<Map<dynamic, dynamic>>? _sub;
 
   CastDevice? _device;
@@ -41,6 +46,7 @@ class CastController extends ChangeNotifier {
   CastProgress get progress => _progress;
   int get shuffle => _shuffle;
   List<RecentItem> get recent => _recent;
+  List<Bookmark> get bookmarks => _bookmarks;
   List<CastDevice> get found => _found;
   List<QueueEntry> get queue => _queue;
   int get queueIndex => _queueIndex;
@@ -82,6 +88,8 @@ class CastController extends ChangeNotifier {
     switch (e['type']) {
       case 'cast':
         _cast = CastState.fromMap(e);
+        // The TV took over (for example a share from YouTube): the phone stops playing.
+        if (_cast.active && phone.active) unawaited(phone.stop());
         if (_cast.status == 'error' && _cast.error != null) _message = _cast.error;
         _noteTitle();
         notifyListeners();
@@ -167,6 +175,7 @@ class CastController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    if (phone.active) unawaited(phone.stop());
     _remember(id, title ?? '');
     return true;
   }
@@ -193,6 +202,20 @@ class CastController extends ChangeNotifier {
     notifyListeners();
   }
 
+  static String _plain(String url) => url.split('#').first;
+
+  bool isBookmarked(String url) => _bookmarks.any((b) => _plain(b.url) == _plain(url));
+
+  void toggleBookmark(String url, String title) {
+    if (isBookmarked(url)) {
+      _bookmarks = _bookmarks.where((b) => _plain(b.url) != _plain(url)).toList();
+    } else {
+      _bookmarks = [..._bookmarks, Bookmark(url: _plain(url), title: title)];
+    }
+    store.bookmarks = _bookmarks;
+    notifyListeners();
+  }
+
   void clearRecent() {
     _recent = [];
     store.recent = _recent;
@@ -214,6 +237,7 @@ class CastController extends ChangeNotifier {
 
   @override
   void dispose() {
+    phone.dispose();
     _sub?.cancel();
     super.dispose();
   }
