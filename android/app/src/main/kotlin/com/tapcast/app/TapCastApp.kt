@@ -3,14 +3,13 @@ package com.tapcast.app
 import android.app.Application
 import android.content.Context
 import android.util.Log
-import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
- * Initialises the bundled yt-dlp / FFmpeg once per process. Extraction of the
+ * Initialises the bundled yt-dlp once per process. Extraction of the
  * Python runtime takes a moment on first launch, so it happens off the main
  * thread and workers wait on [awaitReady] before running.
  *
@@ -25,7 +24,6 @@ class TapCastApp : Application() {
         thread(name = "ytdlp-init") {
             try {
                 YoutubeDL.getInstance().init(this)
-                FFmpeg.getInstance().init(this)
                 initError = null
             } catch (t: Throwable) {
                 Log.e(TAG, "yt-dlp init failed", t)

@@ -21,8 +21,7 @@ const _script = r'''
   if (yt) {
     try {
       var st = document.createElement('style');
-      st.textContent = 'ytm-pivot-bar-renderer,ytm-app-promo-renderer,ytm-promoted-sparkles-web-renderer,' +
-        'ytm-playlist-panel-renderer,ytm-engagement-panel{display:none!important}';
+      st.textContent = 'ytm-pivot-bar-renderer,ytm-app-promo-renderer,ytm-promoted-sparkles-web-renderer{display:none!important}';
       document.head.appendChild(st);
     } catch (e) {}
   }
@@ -153,7 +152,8 @@ class BrowserPageState extends State<BrowserPage> {
   String _pretty(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
-    final q = uri.queryParameters['search_query'];
+    final q = uri.queryParameters['search_query'] ??
+        (uri.host.contains('google.') && uri.path == '/search' ? uri.queryParameters['q'] : null);
     if (q != null) return q;
     return '${uri.host}${uri.path == '/' ? '' : uri.path}';
   }
@@ -200,7 +200,13 @@ class BrowserPageState extends State<BrowserPage> {
   Future<void> castId(String id, {String title = '', String href = ''}) => _play(id, title, href);
 
   Future<void> _play(String id, String title, String href) async {
-    if (!await ensureDevice(context, c)) return;
+    if (!await ensureDevice(context, c)) {
+      // No TV chosen or found: still let the person watch on the phone.
+      if (mounted && c.device == null && c.found.isEmpty && !c.searching) {
+        await offerPhone(context, c, () => _playOnPhone(id));
+      }
+      return;
+    }
     final ok = await c.castVideo(id, title: title, listUrl: _listFrom(href), shorts: href.contains('/shorts/'));
     if (!mounted) return;
     if (ok) {
@@ -270,7 +276,7 @@ class BrowserPageState extends State<BrowserPage> {
     final looksLikeUrl = !t.contains(' ') && t.contains('.');
     final target = looksLikeUrl
         ? (t.startsWith('http') ? t : 'https://$t')
-        : 'https://m.youtube.com/results?search_query=${Uri.encodeQueryComponent(t)}';
+        : 'https://www.google.com/search?q=${Uri.encodeQueryComponent(t)}';
     _web.loadRequest(Uri.parse(target));
   }
 
@@ -299,7 +305,13 @@ class BrowserPageState extends State<BrowserPage> {
                     onTap: () => _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length),
                     decoration: InputDecoration(
                       isDense: true,
-                      hintText: 'Search YouTube or type a website',
+                      hintText: 'Search Google or type a URL',
+                      suffixIcon: IconButton(
+                        tooltip: 'Reload',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _web.reload(),
+                        icon: const Icon(Icons.refresh_rounded, size: 20),
+                      ),
                       filled: true,
                       fillColor: scheme.surfaceContainerHighest,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

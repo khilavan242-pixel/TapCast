@@ -54,7 +54,6 @@ PACKAGING = '''
 DEPENDENCIES = f'''
 dependencies {{
     implementation("io.github.junkfood02.youtubedl-android:library:{YTDLP_VERSION}")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:{YTDLP_VERSION}")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.core:core-ktx:1.13.1")
 }}
