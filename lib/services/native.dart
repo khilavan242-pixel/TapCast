@@ -76,23 +76,6 @@ class Native {
 
   // ---- playing on the phone itself ----
 
-  Future<Map<String, dynamic>> phoneResolve(String id, {bool legacy = false, bool audio = false}) async {
-    final raw = await _methods.invokeMapMethod<dynamic, dynamic>(
-      'phoneResolve',
-      {'id': id, 'legacy': legacy, 'audio': audio},
-    );
-    return {for (final e in (raw ?? const {}).entries) e.key.toString(): e.value};
-  }
-
-  /// Ids and titles of the videos that should follow [id].
-  Future<List<Map<String, String>>> phoneNext(String id, {bool shorts = false}) async {
-    final raw = await _methods.invokeListMethod<Map<dynamic, dynamic>>('phoneNext', {'id': id, 'shorts': shorts});
-    return [
-      for (final m in raw ?? const <Map<dynamic, dynamic>>[])
-        {'id': m['id'] as String? ?? '', 'title': m['title'] as String? ?? ''},
-    ];
-  }
-
   Future<void> phoneState({
     required String status,
     required String id,
@@ -110,6 +93,7 @@ class Native {
   Future<void> phoneEnd() => _methods.invokeMethod<void>('phoneEnd');
 
   /// Lets Android float the video (picture-in-picture) when the app is left.
-  Future<void> setPhoneVideo({required bool ready, required bool playing}) =>
-      _methods.invokeMethod<void>('setPhoneVideo', {'ready': ready, 'playing': playing});
+  /// [ready] lets the video float; [keep] keeps the page running in the background.
+  Future<void> setPhoneVideo({required bool ready, required bool playing, required bool keep}) =>
+      _methods.invokeMethod<void>('setPhoneVideo', {'ready': ready, 'playing': playing, 'keep': keep});
 }

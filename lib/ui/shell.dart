@@ -8,7 +8,6 @@ import 'devices_sheet.dart';
 import 'files_page.dart';
 import 'recent_page.dart';
 import 'floating_mini.dart';
-import 'phone_view.dart';
 import 'settings_page.dart';
 
 enum _Page { browser, bookmarks, files, recent, settings }
@@ -66,7 +65,7 @@ class _ShellState extends State<Shell> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return ListenableBuilder(
-      listenable: Listenable.merge([c, c.phone]),
+      listenable: c,
       builder: (context, _) {
         final message = c.takeMessage();
         if (message != null) {
@@ -122,9 +121,7 @@ class _ShellState extends State<Shell> {
                   ),
                 ],
               ),
-                  Positioned.fill(child: FloatingMini(controller: c, phoneInline: _page == _Page.browser)),
-                  if (c.phone.inPip && c.phone.active && !c.phone.audioOnly)
-                    Positioned.fill(child: PhonePipView(controller: c)),
+                  Positioned.fill(child: FloatingMini(controller: c)),
                 ],
               ),
             ),

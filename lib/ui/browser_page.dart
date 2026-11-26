@@ -4,13 +4,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../models/cast.dart';
 import '../state/cast_controller.dart';
 import '../utils/url_utils.dart';
 import 'devices_sheet.dart';
-import 'phone_player_page.dart';
-import 'phone_view.dart';
 
 /// Runs inside the YouTube page: tells the app when a video page opens (so it plays on the TV),
 /// keeps the phone's own player silent and paused, and hides YouTube's bottom bar and banners.
@@ -53,14 +52,68 @@ const _script = r'''
       };
     } catch (e) {}
   }
+  // Playing on the phone like a normal browser: the page keeps playing with sound and
+  // thinks it is always visible (so it does not pause when the app is left).
+  try {
+    var hid = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    var vis = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+    Object.defineProperty(document, 'hidden', {configurable: true, get: function() {
+      return window.__tcPhone ? false : hid.get.call(document); }});
+    Object.defineProperty(document, 'visibilityState', {configurable: true, get: function() {
+      return window.__tcPhone ? 'visible' : vis.get.call(document); }});
+    document.addEventListener('visibilitychange', function(e) {
+      if (window.__tcPhone) e.stopImmediatePropagation();
+    }, true);
+  } catch (e) {}
   window.__tcSetPhone = function(on) {
+    window.__tcPhone = !!on;
     try {
-      var e = document.getElementById('tc-phone-style');
+      if (window.__tcPoll) { clearInterval(window.__tcPoll); window.__tcPoll = 0; }
+      var v = document.querySelector('video');
+      if (on) {
+        if (v) { v.muted = false; var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
+        window.__tcPoll = setInterval(function() {
+          try {
+            var w = document.querySelector('video');
+            if (!w) return;
+            post({t: 'pstate', playing: !w.paused && !w.ended,
+              pos: Math.floor(w.currentTime || 0), dur: isFinite(w.duration) ? Math.floor(w.duration) : 0,
+              title: document.title.replace(/\s*-\s*YouTube( Music)?$/, ''), href: location.href});
+          } catch (x) {}
+        }, 1000);
+      } else if (v) { v.pause(); v.muted = true; }
+    } catch (x) {}
+  };
+  window.__tcCmd = function(a, val) {
+    try {
+      var v = document.querySelector('video');
+      if (!v) return;
+      if (a === 'pause') v.pause();
+      else if (a === 'resume') v.play();
+      else if (a === 'seek') v.currentTime = val;
+      else if (a === 'next') {
+        var n = document.querySelector('button[aria-label*="Next" i],.ytp-next-button');
+        if (n) n.click(); else if (isFinite(v.duration)) v.currentTime = v.duration;
+      } else if (a === 'previous') {
+        if (v.currentTime > 3) { v.currentTime = 0; }
+        else {
+          var p = document.querySelector('button[aria-label*="Previous" i],.ytp-prev-button');
+          if (p) p.click(); else v.currentTime = 0;
+        }
+      }
+    } catch (x) {}
+  };
+  // Floating window: only the video is shown.
+  window.__tcPip = function(on) {
+    try {
+      var e = document.getElementById('tc-pip-style');
       if (on) {
         if (!e) {
           e = document.createElement('style');
-          e.id = 'tc-phone-style';
-          e.textContent = '#player-container-id,.player-container,ytm-custom-control,.watch-skeleton-container{display:none!important}';
+          e.id = 'tc-pip-style';
+          e.textContent = 'html,body{overflow:hidden!important;background:#000!important}' +
+            'video{position:fixed!important;left:0!important;top:0!important;width:100vw!important;' +
+            'height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important}';
           document.head.appendChild(e);
         }
       } else if (e) { e.remove(); }
@@ -117,6 +170,9 @@ class BrowserPageState extends State<BrowserPage> {
   bool _canBack = false;
   String? _lastCastId;
   bool _phoneOn = false;
+  bool _pip = false;
+  String _pubKey = '';
+  StreamSubscription<Map<dynamic, dynamic>>? _ev;
   final List<String> _media = [];
   String _mediaPage = '';
 
@@ -134,7 +190,7 @@ class BrowserPageState extends State<BrowserPage> {
         onPageFinished: (url) {
           _setUrl(url);
           _web.runJavaScript(_script);
-          _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(${c.phone.active});');
+          _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(${c.phoneMode});');
         },
         onUrlChange: (change) {
           if (change.url != null) _setUrl(change.url!);
@@ -144,20 +200,55 @@ class BrowserPageState extends State<BrowserPage> {
         },
       ))
       ..loadRequest(Uri.parse(_home));
-    c.phone.addListener(_syncPhone);
+    final platform = _web.platform;
+    if (platform is AndroidWebViewController) {
+      // Sound may start without a tap on the page (used for "Play on phone").
+      platform.setMediaPlaybackRequiresUserGesture(false);
+    }
+    c.addListener(_syncPhone);
+    _ev = c.native.events.listen(_onNativeEvent);
   }
 
-  /// While the phone plays, the page's own player is hidden: TapCast's player sits above the page.
+  bool get _music => _url.contains('music.youtube.com');
+
+  void _onNativeEvent(Map<dynamic, dynamic> e) {
+    switch (e['type']) {
+      case 'phoneCtl':
+        if (!c.phoneMode) return;
+        final action = e['action'] as String? ?? '';
+        final value = (e['value'] as num?)?.toInt() ?? 0;
+        if (action == 'stop') {
+          c.setPhoneMode(false);
+        } else {
+          _web.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
+        }
+      case 'pip':
+        final on = e['on'] == true;
+        if (on == _pip) return;
+        setState(() => _pip = on);
+        _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
+    }
+  }
+
+  /// Starts or ends "playing on the phone" in the page; the notification follows it.
   void _syncPhone() {
-    final on = c.phone.active;
+    final on = c.phoneMode;
     if (on == _phoneOn) return;
     _phoneOn = on;
     _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone($on);');
+    if (on) {
+      c.native.setPhoneVideo(ready: !_music, playing: true, keep: true).catchError((Object _) {});
+    } else {
+      _pubKey = '';
+      c.native.setPhoneVideo(ready: false, playing: false, keep: false).catchError((Object _) {});
+      c.native.phoneEnd().catchError((Object _) {});
+    }
   }
 
   @override
   void dispose() {
-    c.phone.removeListener(_syncPhone);
+    c.removeListener(_syncPhone);
+    _ev?.cancel();
     _address.dispose();
     _focus.dispose();
     super.dispose();
@@ -211,12 +302,25 @@ class BrowserPageState extends State<BrowserPage> {
         // A video page opened (tapped in the list or in "up next"): play it on the TV.
         if (id != null && id != _lastCastId) {
           _lastCastId = id;
-          if (c.phone.active) {
-            _playOnPhone(id);
-          } else {
-            _play(id, '', href);
-          }
+          // In phone mode the page plays it itself; otherwise it goes to the TV.
+          if (!c.phoneMode) _play(id, '', href);
         }
+      } else if (j['t'] == 'pstate') {
+        if (!c.phoneMode) return;
+        final playing = j['playing'] == true;
+        final title = (j['title'] as String?) ?? '';
+        final id = UrlUtils.videoId((j['href'] as String?) ?? '') ?? '';
+        final key = '$id|$playing|$title';
+        if (key != _pubKey) {
+          _pubKey = key;
+          c.native
+              .phoneState(status: playing ? 'playing' : 'paused', id: id, title: title, index: 0, count: 1)
+              .catchError((Object _) {});
+          c.native.setPhoneVideo(ready: !_music, playing: playing, keep: true).catchError((Object _) {});
+        }
+        c.native
+            .phonePos((j['pos'] as num?)?.toInt() ?? 0, (j['dur'] as num?)?.toInt() ?? 0)
+            .catchError((Object _) {});
       } else if (j['t'] == 'media') {
         final u = (j['url'] as String?) ?? '';
         if (u.isNotEmpty && !_media.contains(u) && _media.length < 12) setState(() => _media.add(u));
@@ -253,23 +357,15 @@ class BrowserPageState extends State<BrowserPage> {
       ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
-  /// The TV did not answer: play here with TapCast's own player. It sits above the page
-  /// (background play, floating window when you leave the app).
+  /// The TV did not answer: the page plays here, like a normal browser (sound, notification
+  /// buttons, keeps playing in the background, floating window when you leave the app).
   Future<void> _playOnPhone(String id) async {
     _lastCastId = id;
-    final first = !c.phone.active;
     if (c.cast.active) await c.control('stop');
-    var title = '';
-    if (first) {
-      title = (await _web.getTitle()) ?? '';
-      title = title.replaceAll(RegExp(r'\s*-\s*YouTube( Music)?$'), '');
+    if (!_url.contains(id)) {
+      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id'));
     }
-    await c.phone.start(
-      id,
-      audio: _url.contains('music.youtube.com'),
-      isShorts: _url.contains('/shorts/'),
-      title: title,
-    );
+    c.setPhoneMode(true);
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
@@ -321,7 +417,10 @@ class BrowserPageState extends State<BrowserPage> {
     final pageId = UrlUtils.videoId(_url);
     return Column(
       children: [
-        Material(
+        Visibility(
+          visible: !_pip,
+          maintainState: true,
+          child: Material(
           color: scheme.surfaceContainer,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
@@ -377,6 +476,8 @@ class BrowserPageState extends State<BrowserPage> {
                         await goBack();
                       case 'copy':
                         await Clipboard.setData(ClipboardData(text: _url));
+                      case 'stopphone':
+                        c.setPhoneMode(false);
                       case 'bookmark':
                         final title = (await _web.getTitle()) ?? '';
                         c.toggleBookmark(_url, title);
@@ -392,6 +493,7 @@ class BrowserPageState extends State<BrowserPage> {
                     if (pageId != null || !UrlUtils.isYoutube(_url))
                       PopupMenuItem(value: 'cast', child: Text(pageId != null ? 'Cast this video' : 'Cast this page')),
                     if (_canBack) const PopupMenuItem(value: 'back', child: Text('Back')),
+                    if (c.phoneMode) const PopupMenuItem(value: 'stopphone', child: Text('Stop playing on phone')),
                     PopupMenuItem(
                       value: 'bookmark',
                       child: Text(c.isBookmarked(_url) ? 'Remove bookmark' : 'Add bookmark'),
@@ -405,9 +507,8 @@ class BrowserPageState extends State<BrowserPage> {
             ),
           ),
         ),
-        if (_progress < 100) LinearProgressIndicator(value: _progress / 100, minHeight: 2),
-        if (c.phone.active)
-          PhoneView(controller: c, inline: true, onExpand: () => openPhonePlayer(context, c)),
+        ),
+        if (_progress < 100 && !_pip) LinearProgressIndicator(value: _progress / 100, minHeight: 2),
         Expanded(child: WebViewWidget(controller: _web)),
       ],
     );

@@ -1,7 +1,7 @@
 name: tapcast
 description: Cast YouTube and files from your phone to a DLNA TV. Share a video and it plays on the TV.
 publish_to: "none"
-version: 0.3.1+5
+version: 0.4.0+6
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
   shared_preferences: ^2.3.2
   webview_flutter: ^4.10.0
-  video_player: ^2.9.2
+  webview_flutter_android: ^4.0.0
 
 dev_dependencies:
   flutter_test:

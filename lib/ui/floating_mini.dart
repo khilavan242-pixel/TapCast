@@ -1,19 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
 
 import '../state/cast_controller.dart';
-import 'phone_player_page.dart';
 import 'remote_sheet.dart';
 
-/// A small floating window inside TapCast (drag it anywhere) while something plays on the TV
-/// or on the phone. Outside the app, the notification has the buttons.
+/// A small floating window inside TapCast (drag it anywhere) while something plays on the TV.
+/// Outside the app, the notification has the buttons.
 class FloatingMini extends StatefulWidget {
-  const FloatingMini({super.key, required this.controller, this.phoneInline = false});
+  const FloatingMini({super.key, required this.controller});
 
   final CastController controller;
-
-  /// True while the page itself shows the phone player (so no floating window is needed).
-  final bool phoneInline;
 
   @override
   State<FloatingMini> createState() => _FloatingMiniState();
@@ -30,31 +25,14 @@ class _FloatingMiniState extends State<FloatingMini> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([c, c.phone]),
+      listenable: c,
       builder: (context, _) {
-        final p = c.phone;
-        final phoneOn = p.active && !p.pageOpen && !widget.phoneInline;
-        final castOn = c.cast.active;
-        if (!phoneOn && !castOn) return const SizedBox.shrink();
+        if (!c.cast.active) return const SizedBox.shrink();
         final theme = Theme.of(context);
-
-        final String? thumb;
-        final String title;
-        final bool playing;
-        final VideoPlayerController? live;
-        if (phoneOn) {
-          final cur = p.current;
-          thumb = cur == null ? null : 'https://i.ytimg.com/vi/${cur.id}/mqdefault.jpg';
-          title = (cur?.title.isNotEmpty ?? false) ? cur!.title : 'Playing on this phone';
-          playing = p.playing;
-          live = (!p.audioOnly && (p.controller?.value.isInitialized ?? false)) ? p.controller : null;
-        } else {
-          final s = c.cast;
-          thumb = thumbFor(s.uri);
-          title = (s.title?.isNotEmpty ?? false) ? s.title! : 'Casting to ${s.device}';
-          playing = !s.paused;
-          live = null;
-        }
+        final s = c.cast;
+        final thumb = thumbFor(s.uri);
+        final title = (s.title?.isNotEmpty ?? false) ? s.title! : 'Casting to ${s.device}';
+        final playing = !s.paused;
 
         return LayoutBuilder(
           builder: (context, box) {
@@ -73,7 +51,7 @@ class _FloatingMiniState extends State<FloatingMini> {
                           (at.dx + d.delta.dx).clamp(0.0, maxX),
                           (at.dy + d.delta.dy).clamp(0.0, maxY),
                         )),
-                    onTap: () => phoneOn ? openPhonePlayer(context, c) : showRemote(context, c),
+                    onTap: () => showRemote(context, c),
                     child: Material(
                       elevation: 8,
                       borderRadius: BorderRadius.circular(14),
@@ -87,17 +65,7 @@ class _FloatingMiniState extends State<FloatingMini> {
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                if (live != null)
-                                  FittedBox(
-                                    fit: BoxFit.cover,
-                                    clipBehavior: Clip.hardEdge,
-                                    child: SizedBox(
-                                      width: live.value.size.width <= 0 ? 16 : live.value.size.width,
-                                      height: live.value.size.height <= 0 ? 9 : live.value.size.height,
-                                      child: VideoPlayer(live),
-                                    ),
-                                  )
-                                else if (thumb != null)
+                                if (thumb != null)
                                   Image.network(thumb, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26))
                                 else
                                   const ColoredBox(color: Colors.black26, child: Icon(Icons.tv_rounded)),
@@ -110,27 +78,10 @@ class _FloatingMiniState extends State<FloatingMini> {
                                     child: Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                                       children: [
-                                        _btn(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, () {
-                                          if (phoneOn) {
-                                            p.togglePlay();
-                                          } else {
-                                            c.control(playing ? 'pause' : 'resume');
-                                          }
-                                        }),
-                                        _btn(Icons.skip_next_rounded, () {
-                                          if (phoneOn) {
-                                            p.next();
-                                          } else {
-                                            c.control('next');
-                                          }
-                                        }),
-                                        _btn(Icons.close_rounded, () {
-                                          if (phoneOn) {
-                                            p.stop();
-                                          } else {
-                                            c.control('stop');
-                                          }
-                                        }),
+                                        _btn(playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                            () => c.control(playing ? 'pause' : 'resume')),
+                                        _btn(Icons.skip_next_rounded, () => c.control('next')),
+                                        _btn(Icons.close_rounded, () => c.control('stop')),
                                       ],
                                     ),
                                   ),

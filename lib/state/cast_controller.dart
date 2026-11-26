@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import '../models/cast.dart';
 import '../services/native.dart';
 import '../services/store.dart';
-import 'phone_player.dart';
 import '../utils/url_utils.dart';
 
 /// Everything about the TV: which one is chosen, what it plays, the buttons.
@@ -16,7 +15,6 @@ class CastController extends ChangeNotifier {
     _shuffle = store.shuffle;
     _recent = List.of(store.recent);
     _bookmarks = List.of(store.bookmarks);
-    phone = PhonePlayer(native);
     unawaited(native.setShuffle(_shuffle));
     _sub = native.events.listen(_onEvent);
     unawaited(_syncState());
@@ -24,7 +22,7 @@ class CastController extends ChangeNotifier {
 
   final Native native;
   final Store store;
-  late final PhonePlayer phone;
+  bool _phoneMode = false;
   List<Bookmark> _bookmarks = [];
   StreamSubscription<Map<dynamic, dynamic>>? _sub;
 
@@ -47,6 +45,15 @@ class CastController extends ChangeNotifier {
   int get shuffle => _shuffle;
   List<RecentItem> get recent => _recent;
   List<Bookmark> get bookmarks => _bookmarks;
+
+  /// True while the page plays on the phone itself (like a normal browser), not on the TV.
+  bool get phoneMode => _phoneMode;
+
+  void setPhoneMode(bool v) {
+    if (_phoneMode == v) return;
+    _phoneMode = v;
+    notifyListeners();
+  }
   List<CastDevice> get found => _found;
   List<QueueEntry> get queue => _queue;
   int get queueIndex => _queueIndex;
@@ -89,7 +96,7 @@ class CastController extends ChangeNotifier {
       case 'cast':
         _cast = CastState.fromMap(e);
         // The TV took over (for example a share from YouTube): the phone stops playing.
-        if (_cast.active && phone.active) unawaited(phone.stop());
+        if (_cast.active) _phoneMode = false;
         if (_cast.status == 'error' && _cast.error != null) _message = _cast.error;
         _noteTitle();
         notifyListeners();
@@ -175,7 +182,7 @@ class CastController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
-    if (phone.active) unawaited(phone.stop());
+    _phoneMode = false;
     _remember(id, title ?? '');
     return true;
   }
@@ -237,7 +244,6 @@ class CastController extends ChangeNotifier {
 
   @override
   void dispose() {
-    phone.dispose();
     _sub?.cancel();
     super.dispose();
   }

@@ -32,6 +32,7 @@ class MainActivity : FlutterActivity() {
     private var pipReady = false
     private var pipPlaying = false
     @Volatile private var resumed = false
+    @Volatile private var keepWeb = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,11 +43,6 @@ class MainActivity : FlutterActivity() {
     override fun onStart() {
         super.onStart()
         visible = true
-    }
-
-    override fun onStop() {
-        visible = false
-        super.onStop()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -143,47 +139,6 @@ class MainActivity : FlutterActivity() {
             "castQueue" -> result.success(DlnaCaster.queue())
 
             // ---- playing on the phone itself ----
-            "phoneResolve" -> {
-                val id = call.argument<String>("id")
-                if (id == null) {
-                    result.error("bad_args", "id is required", null)
-                    return
-                }
-                thread(name = "phone-resolve") {
-                    try {
-                        val r = DlnaCaster.resolveForPlayer(
-                            "https://www.youtube.com/watch?v=$id",
-                            call.argument<Boolean>("legacy") == true,
-                            call.argument<Boolean>("audio") == true,
-                            720,
-                        )
-                        main.post { result.success(mapOf("title" to r.first, "url" to r.second, "duration" to r.third)) }
-                    } catch (e: Throwable) {
-                        main.post { result.error("resolve_failed", e.message ?: "Could not open this video", null) }
-                    }
-                }
-            }
-
-            "phoneNext" -> {
-                val id = call.argument<String>("id")
-                if (id == null) {
-                    result.error("bad_args", "id is required", null)
-                    return
-                }
-                val shorts = call.argument<Boolean>("shorts") == true
-                thread(name = "phone-next") {
-                    val list = try {
-                        CastQueue.nextList(id, shorts).mapNotNull { e ->
-                            val vid = CastQueue.videoId(e.url) ?: return@mapNotNull null
-                            mapOf("id" to vid, "title" to e.title)
-                        }
-                    } catch (e: Throwable) {
-                        emptyList()
-                    }
-                    main.post { result.success(list) }
-                }
-            }
-
             "phoneState" -> {
                 val id = call.argument<String>("id") ?: ""
                 val map = mapOf<String, Any?>(
@@ -215,6 +170,7 @@ class MainActivity : FlutterActivity() {
             "setPhoneVideo" -> {
                 pipReady = call.argument<Boolean>("ready") == true
                 pipPlaying = call.argument<Boolean>("playing") == true
+                keepWeb = call.argument<Boolean>("keep") == true
                 applyPipParams()
                 result.success(null)
             }
@@ -394,6 +350,35 @@ class MainActivity : FlutterActivity() {
     override fun onPause() {
         resumed = false
         super.onPause()
+        keepWebRunning()
+    }
+
+    override fun onStop() {
+        visible = false
+        super.onStop()
+        keepWebRunning()
+    }
+
+    private fun findWebViews(v: android.view.View, out: MutableList<android.webkit.WebView>) {
+        if (v is android.webkit.WebView) out.add(v)
+        if (v is android.view.ViewGroup) {
+            for (i in 0 until v.childCount) findWebViews(v.getChildAt(i), out)
+        }
+    }
+
+    /** A page that plays on the phone must keep running when the app leaves the screen. */
+    private fun keepWebRunning() {
+        if (!keepWeb) return
+        try {
+            val found = ArrayList<android.webkit.WebView>()
+            findWebViews(window.decorView, found)
+            for (w in found) {
+                w.onResume()
+                w.resumeTimers()
+            }
+        } catch (e: Exception) {
+            // best effort
+        }
     }
 
     /** While casting, the phone's volume keys change the TV volume. */
