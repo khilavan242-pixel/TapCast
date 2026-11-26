@@ -203,6 +203,17 @@ class BrowserPageState extends State<BrowserPage> {
   StreamSubscription<Map<dynamic, dynamic>>? _ev;
   final List<String> _media = [];
   String _mediaPage = '';
+  // Second page that plays "on phone" videos, so the main page can keep browsing.
+  WebViewController? _player;
+  final GlobalKey _playerKey = GlobalKey();
+  bool _playerOn = false;
+  bool _big = false;
+  bool _playerPlaying = false;
+  bool _playerMusic = false;
+  String _playerId = '';
+  String _playerTitle = '';
+  double _fr = 12;
+  double _fb = 12;
 
   CastController get c => widget.controller;
 
@@ -218,7 +229,6 @@ class BrowserPageState extends State<BrowserPage> {
         onPageFinished: (url) {
           _setUrl(url);
           _web.runJavaScript(_script);
-          _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(${c.phoneMode});');
         },
         onUrlChange: (change) {
           if (change.url != null) _setUrl(change.url!);
@@ -247,19 +257,26 @@ class BrowserPageState extends State<BrowserPage> {
         final value = (e['value'] as num?)?.toInt() ?? 0;
         if (action == 'stop') {
           c.setPhoneMode(false);
+          _stopPlayer();
           if (_webActive) {
             _webActive = false;
             _web.runJavaScript("window.__tcCmd&&window.__tcCmd('pause',0);");
             c.native.phoneEnd().catchError((Object _) {});
           }
         } else {
-          _web.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
+          final t = _webActive ? _web : (_playerOn ? (_player ?? _web) : _web);
+          t.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
         }
       case 'pip':
         final on = e['on'] == true;
         if (on == _pip) return;
         setState(() => _pip = on);
-        _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
+        final pl = _player;
+        if (_playerOn && pl != null) {
+          pl.runJavaScript('window.__tcPip&&window.__tcPip(${on || !_big});');
+        } else {
+          _web.runJavaScript('window.__tcPip&&window.__tcPip($on);');
+        }
     }
   }
 
@@ -268,14 +285,93 @@ class BrowserPageState extends State<BrowserPage> {
     final on = c.phoneMode;
     if (on == _phoneOn) return;
     _phoneOn = on;
-    _web.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone($on);');
     if (on) {
-      c.native.setPhoneVideo(ready: !_music, playing: true, keep: true).catchError((Object _) {});
+      c.native.setPhoneVideo(ready: !_playerMusic, playing: true, keep: true).catchError((Object _) {});
     } else {
+      _stopPlayer();
       _pubKey = '';
       c.native.setPhoneVideo(ready: false, playing: false, keep: false).catchError((Object _) {});
       c.native.phoneEnd().catchError((Object _) {});
     }
+  }
+
+  WebViewController _ensurePlayer() {
+    final old = _player;
+    if (old != null) return old;
+    final p = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.black)
+      ..addJavaScriptChannel('TapCastPlayer', onMessageReceived: _onPlayerMessage)
+      ..setNavigationDelegate(NavigationDelegate(onPageFinished: (url) => _initPlayer(url)));
+    final platform = p.platform;
+    if (platform is AndroidWebViewController) {
+      platform.setMediaPlaybackRequiresUserGesture(false);
+    }
+    _player = p;
+    return p;
+  }
+
+  Future<void> _initPlayer(String url) async {
+    final p = _player;
+    if (p == null || !_playerOn || url.startsWith('about:')) return;
+    await p.runJavaScript('window.TapCast = window.TapCastPlayer;');
+    await p.runJavaScript(_script);
+    await p.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !_big});');
+    for (final ms in const [0, 1500, 3500]) {
+      if (ms > 0) await Future<void>.delayed(Duration(milliseconds: ms));
+      if (!mounted || !_playerOn) return;
+      await p.runJavaScript('window.__tcSetPhone&&window.__tcSetPhone(true);');
+    }
+  }
+
+  void _onPlayerMessage(JavaScriptMessage m) {
+    try {
+      final j = jsonDecode(m.message) as Map<String, dynamic>;
+      if (j['t'] != 'pstate' || !_playerOn) return;
+      final playing = j['playing'] == true;
+      final title = (j['title'] as String?) ?? '';
+      final href = (j['href'] as String?) ?? '';
+      final id = UrlUtils.videoId(href) ?? '';
+      final music = href.contains('music.youtube.com');
+      if (playing != _playerPlaying || title != _playerTitle || id != _playerId || music != _playerMusic) {
+        setState(() {
+          _playerPlaying = playing;
+          _playerTitle = title;
+          if (id.isNotEmpty) _playerId = id;
+          _playerMusic = music;
+        });
+      }
+      final key = '$id|$playing|$title|p';
+      if (key != _pubKey) {
+        _pubKey = key;
+        c.native
+            .phoneState(status: playing ? 'playing' : 'paused', id: id, title: title, index: 0, count: 1)
+            .catchError((Object _) {});
+        c.native.setPhoneVideo(ready: !music, playing: playing, keep: true).catchError((Object _) {});
+      }
+      _phonePos = (j['pos'] as num?)?.toInt() ?? 0;
+      c.native.phonePos(_phonePos, (j['dur'] as num?)?.toInt() ?? 0).catchError((Object _) {});
+    } catch (_) {/* ignore */}
+  }
+
+  void _stopPlayer() {
+    if (!_playerOn && _player == null) return;
+    _playerOn = false;
+    _big = false;
+    _playerPlaying = false;
+    _playerId = '';
+    _playerTitle = '';
+    _player?.loadRequest(Uri.parse('about:blank'));
+    if (mounted) setState(() {});
+  }
+
+  void _setBig(bool b) {
+    setState(() => _big = b);
+    _player?.runJavaScript('window.__tcPip&&window.__tcPip(${_pip || !b});');
+  }
+
+  void _playerCmd(String a) {
+    _player?.runJavaScript("window.__tcCmd&&window.__tcCmd('$a',0);");
   }
 
   @override
@@ -336,7 +432,11 @@ class BrowserPageState extends State<BrowserPage> {
         if (id != null && id != _lastCastId) {
           _lastCastId = id;
           // In phone mode the page plays it itself; otherwise it goes to the TV.
-          if (!c.phoneMode) _play(id, '', href);
+          if (c.phoneMode) {
+            _playOnPhone(id);
+          } else {
+            _play(id, '', href);
+          }
         }
       } else if (j['t'] == 'pstate') {
         final web = j['web'] == true;
@@ -391,12 +491,13 @@ class BrowserPageState extends State<BrowserPage> {
         return;
       }
       await _toPhone(castId, c.progress.position);
-    } else if (c.phoneMode && pageId != null) {
-      _lastCastId = pageId;
+    } else if (c.phoneMode && (pageId != null || _playerId.isNotEmpty)) {
+      final id = _playerId.isNotEmpty ? _playerId : pageId!;
+      _lastCastId = id;
       final pos = _phonePos;
-      await _play(pageId, '', _url);
+      await _play(id, '', 'https://m.youtube.com/watch?v=$id');
       if (c.cast.active || c.phoneMode == false) unawaited(_seekWhenPlaying(pos));
-    } else if (c.device != null && pageId != null) {
+    } else if (pageId != null) {
       _lastCastId = pageId;
       await _play(pageId, '', _url);
     } else if (c.device != null && !UrlUtils.isYoutube(_url) && _media.isNotEmpty) {
@@ -419,14 +520,7 @@ class BrowserPageState extends State<BrowserPage> {
     await c.control('stop');
     await Future<void>.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
-    if (_url.contains(id)) {
-      await _web.runJavaScript(
-          "try{var v=document.querySelector('video');if(v&&$pos>3)v.currentTime=$pos;}catch(e){}");
-    } else {
-      final t = pos > 3 ? '&t=${pos}s' : '';
-      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id$t'));
-    }
-    c.setPhoneMode(true);
+    await _playOnPhone(id, start: pos);
     _snack('Playing on this phone');
   }
 
@@ -447,12 +541,18 @@ class BrowserPageState extends State<BrowserPage> {
   Future<void> castId(String id, {String title = '', String href = ''}) => _play(id, title, href);
 
   Future<void> _play(String id, String title, String href) async {
-    if (!await ensureDevice(context, c)) {
-      // No TV chosen or found: still let the person watch on the phone.
-      if (mounted && c.device == null && c.found.isEmpty && !c.searching) {
-        await offerPhone(context, c, () => _playOnPhone(id));
+    if (c.device == null) {
+      _snack('Looking for your TV…');
+      await c.search();
+      if (!mounted) return;
+      if (c.found.length == 1) {
+        c.chooseDevice(c.found.first);
+      } else if (c.found.isEmpty) {
+        await offerPhone(context, c, () => _playOnPhone(id), none: true, onChoose: () => showDevicesSheet(context, c));
+        return;
+      } else if (!await showDevicesSheet(context, c)) {
+        return;
       }
-      return;
     }
     final ok = await c.castVideo(id, title: title, listUrl: _listFrom(href), shorts: href.contains('/shorts/'));
     if (!mounted) return;
@@ -468,13 +568,21 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// The TV did not answer: the page plays here, like a normal browser (sound, notification
   /// buttons, keeps playing in the background, floating window when you leave the app).
-  Future<void> _playOnPhone(String id) async {
+  Future<void> _playOnPhone(String id, {int start = 0}) async {
     _lastCastId = id;
     if (c.cast.active) await c.control('stop');
-    if (!_url.contains(id)) {
-      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id'));
-    }
+    final p = _ensurePlayer();
+    final host = _url.contains('music.youtube.com') ? 'music.youtube.com' : 'm.youtube.com';
+    final t = start > 3 ? '&t=${start}s' : '';
+    setState(() {
+      _playerOn = true;
+      _big = false;
+      _playerId = id;
+      _playerMusic = host.startsWith('music');
+    });
     c.setPhoneMode(true);
+    _syncPhone();
+    await p.loadRequest(Uri.parse('https://$host/watch?v=$id$t'));
   }
 
   /// Any other website: casts the video found on the page (or the page itself).
@@ -524,7 +632,8 @@ class BrowserPageState extends State<BrowserPage> {
     final scheme = theme.colorScheme;
     final casting = c.cast.active;
     final pageId = UrlUtils.videoId(_url);
-    return Column(
+    return Stack(children: [
+      Column(
       children: [
         Visibility(
           visible: !_pip,
@@ -631,6 +740,102 @@ class BrowserPageState extends State<BrowserPage> {
         if (_progress < 100 && !_pip) LinearProgressIndicator(value: _progress / 100, minHeight: 2),
         Expanded(child: WebViewWidget(controller: _web)),
       ],
+      ),
+      if (_playerOn && _player != null) _playerLayer(scheme),
+    ]);
+  }
+
+  Widget _playerLayer(ColorScheme scheme) {
+    final full = _pip || _big;
+    const w = 220.0;
+    const h = 124.0;
+    final size = MediaQuery.of(context).size;
+    final video = WebViewWidget(key: _playerKey, controller: _player!);
+    Widget btn(IconData i, VoidCallback f) => Expanded(
+          child: InkWell(onTap: f, child: Center(child: Icon(i, color: Colors.white, size: 20))),
+        );
+    final children = <Widget>[Positioned.fill(child: video)];
+    if (!_pip && !_big) {
+      children.addAll([
+        Positioned(
+          left: 0,
+          right: 0,
+          top: 0,
+          height: 28,
+          child: GestureDetector(
+            onPanUpdate: (d) => setState(() {
+              _fr = (_fr - d.delta.dx).clamp(0.0, size.width - w);
+              _fb = (_fb - d.delta.dy).clamp(0.0, size.height - h - 100);
+            }),
+            child: Container(
+              color: Colors.black54,
+              alignment: Alignment.centerRight,
+              child: InkWell(
+                onTap: () => c.setPhoneMode(false),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Icon(Icons.close_rounded, color: Colors.white, size: 18),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 34,
+          child: Container(
+            color: Colors.black54,
+            child: Row(children: [
+              btn(Icons.skip_previous_rounded, () => _playerCmd('previous')),
+              btn(_playerPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  () => _playerCmd(_playerPlaying ? 'pause' : 'resume')),
+              btn(Icons.skip_next_rounded, () => _playerCmd('next')),
+              btn(Icons.open_in_full_rounded, () => _setBig(true)),
+            ]),
+          ),
+        ),
+      ]);
+    } else if (_big && !_pip) {
+      children.add(Positioned(
+        left: 0,
+        right: 0,
+        top: 0,
+        height: 40,
+        child: Container(
+          color: Colors.black87,
+          child: Row(children: [
+            IconButton(
+              onPressed: () => _setBig(false),
+              icon: const Icon(Icons.close_fullscreen_rounded, color: Colors.white, size: 20),
+            ),
+            Expanded(
+              child: Text(_playerTitle,
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+            ),
+            IconButton(
+              onPressed: () => c.setPhoneMode(false),
+              icon: const Icon(Icons.close_rounded, color: Colors.white, size: 20),
+            ),
+          ]),
+        ),
+      ));
+    }
+    return Positioned(
+      left: full ? 0 : null,
+      top: full ? 0 : null,
+      right: full ? 0 : _fr,
+      bottom: full ? 0 : _fb,
+      width: full ? null : w,
+      height: full ? null : h,
+      child: Material(
+        color: Colors.black,
+        elevation: full ? 0 : 8,
+        borderRadius: full ? null : BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(children: children),
+      ),
     );
   }
 }

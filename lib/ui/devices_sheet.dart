@@ -90,17 +90,20 @@ class _DevicesSheet extends StatelessWidget {
 
 /// The TV did not answer: ask whether to play on the phone instead.
 /// [onPhone] runs when the person says yes.
-Future<void> offerPhone(BuildContext context, CastController c, VoidCallback onPhone) async {
-  final yes = await showDialog<bool>(
+Future<void> offerPhone(BuildContext context, CastController c, VoidCallback onPhone,
+    {bool none = false, VoidCallback? onChoose}) async {
+  final r = await showDialog<int>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text("Can't reach ${c.device?.name ?? 'the TV'}"),
+      title: Text(none ? 'No TV found' : "Can't reach ${c.device?.name ?? 'the TV'}"),
       content: const Text('Play on phone?'),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Play on phone')),
+        TextButton(onPressed: () => Navigator.pop(ctx, 0), child: const Text('Cancel')),
+        if (onChoose != null) TextButton(onPressed: () => Navigator.pop(ctx, 2), child: const Text('Choose a TV')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Play on phone')),
       ],
     ),
   );
-  if (yes == true) onPhone();
+  if (r == 1) onPhone();
+  if (r == 2) onChoose?.call();
 }
