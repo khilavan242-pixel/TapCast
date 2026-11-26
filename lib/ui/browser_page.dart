@@ -19,6 +19,15 @@ const _script = r'''
   window.__tcInit = true;
   function post(o) { try { TapCast.postMessage(JSON.stringify(o)); } catch (e) {} }
   var yt = /(^|\.)youtube\.com$/.test(location.hostname);
+  // The video or song that is playing (or the first one on the page).
+  function media() {
+    var l = document.querySelectorAll('video,audio'), best = null;
+    for (var i = 0; i < l.length; i++) {
+      if (!l[i].paused && !l[i].ended) return l[i];
+      if (!best && isFinite(l[i].duration) && l[i].duration > 0) best = l[i];
+    }
+    return best;
+  }
   if (yt) {
     try {
       var st = document.createElement('style');
@@ -69,12 +78,12 @@ const _script = r'''
     window.__tcPhone = !!on;
     try {
       if (window.__tcPoll) { clearInterval(window.__tcPoll); window.__tcPoll = 0; }
-      var v = document.querySelector('video');
+      var v = media();
       if (on) {
         if (v) { v.muted = false; var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
         window.__tcPoll = setInterval(function() {
           try {
-            var w = document.querySelector('video');
+            var w = media();
             if (!w) return;
             post({t: 'pstate', playing: !w.paused && !w.ended,
               pos: Math.floor(w.currentTime || 0), dur: isFinite(w.duration) ? Math.floor(w.duration) : 0,
@@ -86,23 +95,40 @@ const _script = r'''
   };
   window.__tcCmd = function(a, val) {
     try {
-      var v = document.querySelector('video');
+      var v = media();
       if (!v) return;
       if (a === 'pause') v.pause();
       else if (a === 'resume') v.play();
       else if (a === 'seek') v.currentTime = val;
       else if (a === 'next') {
-        var n = document.querySelector('button[aria-label*="Next" i],.ytp-next-button');
+        var n = document.querySelector('button[aria-label*="Next" i],.ytp-next-button,button[class*="next" i]');
         if (n) n.click(); else if (isFinite(v.duration)) v.currentTime = v.duration;
       } else if (a === 'previous') {
         if (v.currentTime > 3) { v.currentTime = 0; }
         else {
-          var p = document.querySelector('button[aria-label*="Previous" i],.ytp-prev-button');
+          var p = document.querySelector('button[aria-label*="Previous" i],.ytp-prev-button,button[class*="prev" i]');
           if (p) p.click(); else v.currentTime = 0;
         }
       }
     } catch (x) {}
   };
+  // Any other website that plays music or video (JioSaavn, Spotify web ...): show it in the notification.
+  if (!yt) {
+    var wasPlaying = false;
+    setInterval(function() {
+      try {
+        var m = media();
+        var playing = !!m && !m.paused && !m.ended && !m.muted && m.volume > 0;
+        if (!playing && !wasPlaying) return;
+        wasPlaying = playing;
+        window.__tcPhone = playing;
+        if (!m) return;
+        post({t: 'pstate', web: true, playing: playing,
+          pos: Math.floor(m.currentTime || 0), dur: isFinite(m.duration) ? Math.floor(m.duration) : 0,
+          title: document.title, href: location.href});
+      } catch (x) {}
+    }, 1000);
+  }
   // Floating window: only the video is shown.
   window.__tcPip = function(on) {
     try {
@@ -171,6 +197,8 @@ class BrowserPageState extends State<BrowserPage> {
   String? _lastCastId;
   bool _phoneOn = false;
   bool _pip = false;
+  bool _webActive = false;
+  int _phonePos = 0;
   String _pubKey = '';
   StreamSubscription<Map<dynamic, dynamic>>? _ev;
   final List<String> _media = [];
@@ -214,11 +242,16 @@ class BrowserPageState extends State<BrowserPage> {
   void _onNativeEvent(Map<dynamic, dynamic> e) {
     switch (e['type']) {
       case 'phoneCtl':
-        if (!c.phoneMode) return;
+        if (!c.phoneMode && !_webActive) return;
         final action = e['action'] as String? ?? '';
         final value = (e['value'] as num?)?.toInt() ?? 0;
         if (action == 'stop') {
           c.setPhoneMode(false);
+          if (_webActive) {
+            _webActive = false;
+            _web.runJavaScript("window.__tcCmd&&window.__tcCmd('pause',0);");
+            c.native.phoneEnd().catchError((Object _) {});
+          }
         } else {
           _web.runJavaScript("window.__tcCmd&&window.__tcCmd('$action',$value);");
         }
@@ -306,20 +339,32 @@ class BrowserPageState extends State<BrowserPage> {
           if (!c.phoneMode) _play(id, '', href);
         }
       } else if (j['t'] == 'pstate') {
-        if (!c.phoneMode) return;
+        final web = j['web'] == true;
+        if (!c.phoneMode && !web) return;
+        if (web && c.cast.active) return;
+        if (web) _webActive = true;
         final playing = j['playing'] == true;
         final title = (j['title'] as String?) ?? '';
-        final id = UrlUtils.videoId((j['href'] as String?) ?? '') ?? '';
-        final key = '$id|$playing|$title';
+        final href = (j['href'] as String?) ?? '';
+        final id = UrlUtils.videoId(href) ?? '';
+        final key = '$id|$playing|$title|$web';
         if (key != _pubKey) {
           _pubKey = key;
           c.native
-              .phoneState(status: playing ? 'playing' : 'paused', id: id, title: title, index: 0, count: 1)
+              .phoneState(
+                status: playing ? 'playing' : 'paused',
+                id: id,
+                title: title,
+                index: 0,
+                count: 1,
+                uri: web ? href : null,
+              )
               .catchError((Object _) {});
-          c.native.setPhoneVideo(ready: !_music, playing: playing, keep: true).catchError((Object _) {});
+          c.native.setPhoneVideo(ready: !web && !_music, playing: playing, keep: true).catchError((Object _) {});
         }
+        _phonePos = (j['pos'] as num?)?.toInt() ?? 0;
         c.native
-            .phonePos((j['pos'] as num?)?.toInt() ?? 0, (j['dur'] as num?)?.toInt() ?? 0)
+            .phonePos(_phonePos, (j['dur'] as num?)?.toInt() ?? 0)
             .catchError((Object _) {});
       } else if (j['t'] == 'media') {
         final u = (j['url'] as String?) ?? '';
@@ -334,17 +379,67 @@ class BrowserPageState extends State<BrowserPage> {
     return 'https://www.youtube.com/playlist?list=$list';
   }
 
-  /// The cast button: one tap sends what is open to the saved TV (also from "playing on phone");
-  /// with no TV saved, or nothing to cast, it opens the TV list.
+  /// The cast button switches between the TV and the phone, keeping the place in the video:
+  /// playing on the TV -> plays here; playing here -> goes to the TV. When nothing plays it sends the
+  /// open video to the saved TV (or opens the TV list when there is nothing to cast).
   Future<void> _castTap() async {
-    final id = UrlUtils.videoId(_url);
-    if (c.device != null && id != null) {
-      _lastCastId = id;
-      await _play(id, '', _url);
+    final pageId = UrlUtils.videoId(_url);
+    if (c.cast.active) {
+      final castId = c.cast.uri == null ? null : UrlUtils.videoId(c.cast.uri!);
+      if (castId == null) {
+        _snack('Only YouTube videos can switch to the phone');
+        return;
+      }
+      await _toPhone(castId, c.progress.position);
+    } else if (c.phoneMode && pageId != null) {
+      _lastCastId = pageId;
+      final pos = _phonePos;
+      await _play(pageId, '', _url);
+      if (c.cast.active || c.phoneMode == false) unawaited(_seekWhenPlaying(pos));
+    } else if (c.device != null && pageId != null) {
+      _lastCastId = pageId;
+      await _play(pageId, '', _url);
     } else if (c.device != null && !UrlUtils.isYoutube(_url) && _media.isNotEmpty) {
       await _castPage();
     } else {
       widget.onCast();
+    }
+  }
+
+  void _snack(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 2)));
+  }
+
+  /// Moves the TV's video to the phone, from the same second.
+  Future<void> _toPhone(String id, int pos) async {
+    _lastCastId = id;
+    await c.control('stop');
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    if (_url.contains(id)) {
+      await _web.runJavaScript(
+          "try{var v=document.querySelector('video');if(v&&$pos>3)v.currentTime=$pos;}catch(e){}");
+    } else {
+      final t = pos > 3 ? '&t=${pos}s' : '';
+      await _web.loadRequest(Uri.parse('https://m.youtube.com/watch?v=$id$t'));
+    }
+    c.setPhoneMode(true);
+    _snack('Playing on this phone');
+  }
+
+  /// After a hand-over to the TV, jumps to where the phone was once the TV is playing.
+  Future<void> _seekWhenPlaying(int pos) async {
+    if (pos <= 5) return;
+    for (var i = 0; i < 30; i++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (!mounted) return;
+      if (c.cast.status == 'playing') {
+        await c.control('seek', value: pos);
+        return;
+      }
     }
   }
 
@@ -474,7 +569,11 @@ class BrowserPageState extends State<BrowserPage> {
                 GestureDetector(
                   onLongPress: widget.onCast,
                   child: IconButton(
-                    tooltip: c.device == null ? 'Choose a TV' : 'Tap: cast to ${c.device!.name}. Hold: change TV',
+                    tooltip: casting
+                        ? 'On TV. Tap: play on phone. Hold: change TV'
+                        : c.phoneMode
+                            ? 'On phone. Tap: play on TV. Hold: change TV'
+                            : (c.device == null ? 'Choose a TV' : 'Tap: cast to ${c.device!.name}. Hold: change TV'),
                     onPressed: _castTap,
                     icon: Icon(
                       casting ? Icons.cast_connected_rounded : Icons.cast_rounded,

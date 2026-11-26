@@ -146,7 +146,7 @@ class MainActivity : FlutterActivity() {
                     "status" to (call.argument<String>("status") ?: "playing"),
                     "device" to "this phone",
                     "title" to call.argument<String>("title"),
-                    "uri" to "https://www.youtube.com/watch?v=$id",
+                    "uri" to (call.argument<String>("uri") ?: "https://www.youtube.com/watch?v=$id"),
                     "index" to (call.argument<Int>("index") ?: 0),
                     "count" to (call.argument<Int>("count") ?: 1),
                 )

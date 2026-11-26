@@ -82,10 +82,11 @@ class Native {
     required String title,
     required int index,
     required int count,
+    String? uri,
   }) =>
       _methods.invokeMethod<void>(
         'phoneState',
-        {'status': status, 'id': id, 'title': title, 'index': index, 'count': count},
+        {'status': status, 'id': id, 'title': title, 'index': index, 'count': count, 'uri': uri},
       );
 
   Future<void> phonePos(int pos, int dur) => _methods.invokeMethod<void>('phonePos', {'pos': pos, 'dur': dur});
